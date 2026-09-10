@@ -68,6 +68,9 @@ class App(QObject):
         self._server_online = False
         self._docker_ok = False
         self._probing = False
+        self._probed_once = False
+        self._server_state: str | None = None   # unused|online|starting|unreachable|stopped
+        self._server_wanted = True               # False after the user stops it by hand
 
         autostart.sync(self.settings.launch_on_startup)
 
@@ -163,6 +166,9 @@ class App(QObject):
         self.act_button.setChecked(new_settings.button_enabled)
         self._dev_menu.menuAction().setVisible(new_settings.developer_options)
 
+        if "backend" in changed:
+            self._server_wanted = new_settings.backend == "server"
+
         # a live re-read on the agent, no restart needed
         if "button_enabled" in changed and self.agent.running():
             self.agent.signal_button()
@@ -208,7 +214,9 @@ class App(QObject):
         if checked:
             self._start_server_async()
         else:
-            self.status.add("info", "ASR server: stopping")
+            self._server_wanted = False
+            self._server_online = False
+            self.status.add("info", "ASR server: stopped")
             threading.Thread(target=orch.stop_server, args=(self.settings,),
                              daemon=True).start()
 
@@ -257,29 +265,33 @@ class App(QObject):
 
     # ------------------------------------------------------------- server
     def _start_server_async(self) -> None:
-        if not orch.docker_available():
-            self.status.add("warn",
-                            "Docker isn't running — using the local Whisper fallback")
-            return
-        self.status.add("info", "ASR server: starting… (first run downloads the model)")
+        # everything (incl. the blocking `docker info`) happens off the UI thread;
+        # _refresh_status turns the result into a single status-feed message
+        self._server_wanted = True
         threading.Thread(target=self._server_task, args=("start",), daemon=True).start()
 
     def _server_task(self, kind: str) -> None:
-        """Run start/restart, then wait for /health and report when it's up."""
-        if kind == "restart":
-            orch.restart_server(self.settings)
-        else:
+        """Bring the container up/back; leave the messaging to _refresh_status."""
+        if not orch.docker_available():
+            self._docker_ok = False
+            self._probed_once = True
+            return                                # -> "not reachable" transition
+        if kind == "start":
+            self.status.add("info", "ASR server: starting… (first run downloads the model)")
             proc = orch.start_server(self.settings)
             if proc:
                 proc.wait()
-        for _ in range(150):                      # up to ~5 min for a first build
-            if orch.server_running(self.settings):
-                self._server_online = True
-                self.status.add("ok", "ASR server: online")
+        else:
+            orch.restart_server(self.settings)
+        self._probed_once = True
+        for _ in range(150):                       # up to ~5 min for a first build
+            self._server_online = orch.server_running(self.settings)
+            if self._server_online:
+                return
+            if not orch.docker_available():        # Docker Desktop was closed
+                self._docker_ok = False
                 return
             time.sleep(2)
-        self.status.add("warn", "ASR server: still loading — check the log if it "
-                                "doesn't come online")
 
     # ------------------------------------------------------------- status
     def _kick_probe(self) -> None:
@@ -296,26 +308,53 @@ class App(QObject):
                 self._server_online = orch.server_running(self.settings)
                 self._docker_ok = self._server_online or orch.docker_available()
             finally:
+                self._probed_once = True
                 self._probing = False
 
         threading.Thread(target=work, daemon=True).start()
 
+    _SERVER_TXT = {
+        "unused": "not used (local model)",
+        "online": "online",
+        "starting": "starting…",
+        "unreachable": "not reachable — local fallback",
+        "stopped": "stopped",
+    }
+    _SERVER_EVENT = {
+        "online": ("ok", "ASR server: online"),
+        "unreachable": ("warn", "ASR server not reachable — Docker Desktop isn't "
+                        "running. Dictation still works via the local Whisper fallback."),
+    }
+
+    def _server_status(self) -> str:
+        if self.settings.backend != "server":
+            return "unused"
+        if self._server_online:
+            return "online"
+        if not self._server_wanted:
+            return "stopped"
+        if self._docker_ok:
+            return "starting"
+        return "unreachable"
+
     def _refresh_status(self) -> None:
         self.status.refresh()
-        uses_server = self.settings.backend == "server"
         server = self._server_online
         agent = self.agent.running()
         self.act_server.setChecked(server)
         self.act_agent.setChecked(agent)
 
-        if not uses_server:
-            server_txt = "not used (local model)"
-        elif server:
-            server_txt = "online"
-        elif self._docker_ok:
-            server_txt = "starting…"
+        srv = self._server_status()
+        if not self._probed_once and srv != "unused":
+            server_txt = "checking…"
         else:
-            server_txt = "offline (local fallback)"
+            # one status-feed message per real transition
+            if srv != self._server_state:
+                self._server_state = srv
+                evt = self._SERVER_EVENT.get(srv)
+                if evt:
+                    self.status.add(*evt)
+            server_txt = self._SERVER_TXT[srv]
         agent_txt = "running" if agent else ("stopped" if orch.agent_supported()
                                              else "n/a on this OS")
 
@@ -326,9 +365,9 @@ class App(QObject):
             state = "recording"
         elif act_state == "busy":
             state = "busy"
-        elif not uses_server or server:
+        elif srv in ("unused", "online"):
             state = "idle"
-        elif self._docker_ok:
+        elif srv == "starting":
             state = "busy"
         else:
             state = "offline"

@@ -36,14 +36,14 @@ _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 # ============================================================ ASR server
 def docker_available() -> bool:
+    """True only if the Docker CLI exists AND the daemon answers (Desktop running)."""
     if not shutil.which("docker"):
         return False
     try:
-        subprocess.run(["docker", "info"], capture_output=True, timeout=8,
-                       creationflags=_NO_WINDOW)
-        return True
-    except Exception:  # noqa: BLE001
-        return subprocess.run(["docker", "info"], capture_output=True).returncode == 0
+        return subprocess.run(["docker", "info"], capture_output=True, timeout=8,
+                               creationflags=_NO_WINDOW).returncode == 0
+    except Exception:  # noqa: BLE001  (timeout / OSError -> daemon not reachable)
+        return False
 
 
 def _has_nvidia_gpu() -> bool:
