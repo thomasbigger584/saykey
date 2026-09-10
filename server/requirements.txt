@@ -1,0 +1,11 @@
+# vdi-dictate ASR server -- base image dependencies.
+# onnxruntime / onnxruntime-gpu is installed separately by the Dockerfile
+# (build arg ORT_PACKAGE) so the same file works for CPU and GPU builds.
+
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+numpy>=1.24
+soundfile>=0.12.1
+onnx-asr[hub]>=0.5.0
+faster-whisper>=1.0.0

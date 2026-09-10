@@ -1,0 +1,12 @@
+.git
+.venv
+models
+__pycache__
+*.pyc
+*.log
+*.wav
+transcript.txt
+config.ini
+scratchpad
+README.md
+server/README.md

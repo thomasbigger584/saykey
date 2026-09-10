@@ -1,0 +1,8 @@
+# Extra dependencies for the "hf:" / transformers engine
+# (any HuggingFace ASR model: Parakeet, Whisper, wav2vec2, MMS, ...).
+# Installed only when the image is built with INSTALL_HF=true
+# (run-server.ps1 -Hf). Large: pulls PyTorch.
+
+torch>=2.2
+transformers>=4.46
+accelerate>=0.30

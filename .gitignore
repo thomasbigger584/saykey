@@ -1,0 +1,10 @@
+.venv/
+.idea/
+models/
+__pycache__/
+*.pyc
+config.ini
+.env
+*.log
+transcript.txt
+*.wav
