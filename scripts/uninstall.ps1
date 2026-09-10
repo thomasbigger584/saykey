@@ -7,12 +7,15 @@
       * the Docker ASR container and image
       * .venv, models, config.ini, generated logs / temp files, __pycache__
 
-    Leaves ALL source files and .git untouched. To delete the project entirely,
-    remove the folder afterwards.
+    By default it backs out every artefact install.ps1 and normal use created,
+    inside the project and out: it also clears the shared HuggingFace model
+    cache under %USERPROFILE%\.cache\huggingface. The project folder itself
+    (source + .git) is always kept -- delete it by hand if you want it gone.
 
     Options:
       -KeepModels        keep .\models (large; slow to re-download)
       -KeepImage         keep the saykey-asr Docker image
+      -KeepHFCache       keep %USERPROFILE%\.cache\huggingface (shared w/ other apps)
       -RemoveAutoHotkey  also `winget uninstall AutoHotkey.AutoHotkey`
       -RemovePython      also `winget uninstall Python.Python.3.12`
       -DryRun            show what would be removed, change nothing
@@ -26,6 +29,7 @@
 param(
     [switch]$KeepModels,
     [switch]$KeepImage,
+    [switch]$KeepHFCache,
     [switch]$RemoveAutoHotkey,
     [switch]$RemovePython,
     [switch]$DryRun,
@@ -65,7 +69,8 @@ function Invoke-Native([scriptblock]$sb) {
 Write-Host "`n=== Saykey uninstaller ===" -ForegroundColor White
 if ($DryRun) { Warn "DRY RUN -- nothing will be changed" }
 if (-not $Yes -and -not $DryRun) {
-    if (-not (Ask "Remove the local environment (.venv, models, config.ini, Docker image)?")) {
+    $extra = if ($KeepHFCache) { "" } else { ", HuggingFace cache" }
+    if (-not (Ask "Remove the local environment (.venv, models, config.ini, Docker image$extra)?")) {
         Write-Host "aborted."; exit 0
     }
 }
@@ -192,7 +197,29 @@ Step "Removing temp files"
 Remove-Path (Join-Path $env:TEMP 'saykey_ctl')       "recorder control directory"
 Get-ChildItem -LiteralPath $env:TEMP -Filter 'saykey*' -ErrorAction SilentlyContinue | ForEach-Object { Remove-Path $_.FullName "%TEMP%\$($_.Name)" }
 
-# --- 5. optional: winget-installed prerequisites -----------------
+# --- 5. shared HuggingFace model cache ----------------------------
+# faster-whisper / transformers stash model blobs here; it is shared with any
+# other app that uses HuggingFace, hence the -KeepHFCache escape hatch.
+if ($KeepHFCache) {
+    Info "kept HuggingFace cache (-KeepHFCache)"
+}
+else {
+    Step "Removing the shared HuggingFace cache"
+    $hfDirs = @(
+        $env:HF_HOME,
+        $env:HUGGINGFACE_HUB_CACHE,
+        $env:TRANSFORMERS_CACHE,
+        (Join-Path $env:USERPROFILE '.cache\huggingface')
+    ) | Where-Object { $_ } | Select-Object -Unique
+    $hit = $false
+    foreach ($d in $hfDirs) {
+        if (Test-Path -LiteralPath $d) { $hit = $true; Remove-Path $d "HuggingFace cache ($d)" }
+    }
+    if (-not $hit -and -not $DryRun) { Ok "no HuggingFace cache found" }
+    Warn "this cache is shared -- other apps using HuggingFace will re-download their models"
+}
+
+# --- 6. optional: winget-installed prerequisites -----------------
 if ($RemoveAutoHotkey -or $RemovePython) {
     Step "Removing prerequisites (winget)"
     if (-not (Get-Command winget -ErrorAction SilentlyContinue)) { Warn "winget not found" }
@@ -210,11 +237,47 @@ if ($RemoveAutoHotkey -or $RemovePython) {
 
 Write-Host ""
 Ok "Uninstall complete."
-Write-Host @"
 
-  Left untouched: all source files, config.example.ini, and .git
-  Still installed (by design): AutoHotkey / Python / Docker Desktop
-      -> pass -RemoveAutoHotkey / -RemovePython to also remove those
-  You may also want to clear the shared HF cache:  $env:USERPROFILE\.cache\huggingface
-  To remove the project entirely, delete this folder.
-"@ -ForegroundColor Gray
+# --- 7. final summary -- only mention what is actually still present -----
+function Test-PkgInstalled([string]$id, [string[]]$commands) {
+    # quick check: a real (non-Store-stub) executable on PATH
+    foreach ($c in $commands) {
+        $cmd = Get-Command $c -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($cmd -and $cmd.Path -and $cmd.Path -notmatch 'WindowsApps') { return $true }
+    }
+    # authoritative check via winget
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        $out = Invoke-Native { winget list --id $id -e --disable-interactivity --accept-source-agreements 2>&1 | Out-String }
+        return [bool]($out -match [regex]::Escape($id))
+    }
+    return $null   # unknown -- keep mentioning it, as before
+}
+
+$ahkState    = Test-PkgInstalled 'AutoHotkey.AutoHotkey' @('AutoHotkey64.exe', 'AutoHotkey.exe')
+$pyState     = Test-PkgInstalled 'Python.Python.3.12'    @('python.exe')
+$dockerState = Test-PkgInstalled 'Docker.DockerDesktop'  @('docker.exe')
+
+$stillInstalled = @()
+if ($ahkState    -ne $false) { $stillInstalled += 'AutoHotkey' }
+if ($pyState     -ne $false) { $stillInstalled += 'Python' }
+if ($dockerState -ne $false) { $stillInstalled += 'Docker Desktop' }
+
+$removable = @()
+if ($ahkState -ne $false) { $removable += '-RemoveAutoHotkey' }
+if ($pyState  -ne $false) { $removable += '-RemovePython' }
+
+$lines = @()
+$lines += ""
+$lines += "  Kept (by design): the project folder itself -- source, config.example.ini, .git"
+$lines += "                    delete it by hand if you want the project gone too"
+if ($KeepHFCache) {
+    $lines += "  Kept (-KeepHFCache): $env:USERPROFILE\.cache\huggingface"
+}
+if ($stillInstalled.Count) {
+    $lines += "  Still installed (system-wide, shared): $($stillInstalled -join ' / ')"
+    if ($removable.Count) {
+        $lines += "      -> pass $($removable -join ' / ') to also remove those"
+    }
+}
+$lines += ""
+Write-Host ($lines -join "`n") -ForegroundColor Gray
