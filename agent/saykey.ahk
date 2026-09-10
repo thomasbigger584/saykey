@@ -61,6 +61,17 @@ C["toast_position"]    := StrLower(readCfg("toast", "position", "bottom"))
 C["toast_margin"]      := Integer(readCfg("toast", "margin", "90"))
 C["toast_font"]        := readCfg("toast", "font_size", "12")
 
+; Floating mouse-driven trigger -- for VDI clients that capture the keyboard so
+; completely that no hotkey (hook OR raw input) can fire while their window has
+; focus. A borderless always-on-top button: left-click-hold to talk (or click to
+; toggle), right-drag to move. Never takes keyboard focus off the VDI.
+C["button_enabled"]    := readCfg("button", "enabled", "false") = "true"
+C["button_position"]   := StrLower(readCfg("button", "position", "bottom-right"))
+C["button_margin"]     := Integer(readCfg("button", "margin", "28"))
+C["button_font"]       := readCfg("button", "font_size", "11")
+C["button_x"]          := Integer(readCfg("button", "x", "-1"))
+C["button_y"]          := Integer(readCfg("button", "y", "-1"))
+
 global HK_MODE    := StrLower(readCfg("hotkey", "mode", "hold"))
 global HK_KEY     := readCfg("hotkey", "key", "^Space")
 global HK_CANCEL  := readCfg("hotkey", "cancel", "^+Space")
@@ -97,9 +108,22 @@ global T_DEV         := A_Temp "\saykey_devices.txt"
 global gState := "idle"      ; idle | starting | recording | transcribing
 global gPressTick := 0
 global DAEMON_PID := 0
+global gWinEventHook := 0
+global gWinEventCb := 0
+global gBurstLeft := 0
+
+; ---- raw-input keyboard trigger (works when a VDI client eats the hook chain) --
+global gTalkActive := false      ; a hold/toggle talk session is in progress
+global RID_MAIN     := 0         ; parsed [hotkey] key   -> {ctrl,alt,shift,win,vk}
+global RID_CANCEL   := 0         ; parsed [hotkey] cancel
+global gRawOK       := false
+global gRawCtrl := false, gRawAlt := false, gRawShift := false, gRawWin := false
+global gRawMainDown := false, gRawCancelDown := false
 
 global ToastGui := ""
 global ToastLbl := ""
+global BtnGui := "", BtnLbl := ""
+global gBtnDrag := false, gBtnDX := 0, gBtnDY := 0
 
 dbg(msg) {
     global DEBUG, T_LOG
@@ -108,6 +132,7 @@ dbg(msg) {
 }
 
 toastInit()
+buttonInit()
 if (A_Args.Length && A_Args[1] = "--test-toast") {
     DEBUG := true
     toastShow("prep"), Sleep(2500)
@@ -117,11 +142,21 @@ if (A_Args.Length && A_Args[1] = "--test-toast") {
 }
 
 buildTray()
+; Own the keyboard hook and sit at the HEAD of the hook chain. Remote-desktop
+; clients (Omnisa/VMware Horizon, Citrix, RDP) install their own WH_KEYBOARD_LL
+; hook to forward keystrokes to the guest and swallow them on the host; a plain
+; RegisterHotkey is processed AFTER every such hook and would never see the key.
+; InstallKeybdHook(true, true) forces our hook in front of hooks installed later
+; (e.g. when you connect to a session), and reassertKeybdHook() keeps it there.
+InstallKeybdHook(true, true)
 if (HK_MODE = "toggle")
     registerHotkey(HK_KEY, onToggle, "key")
 else
     registerHotkey(HK_KEY, onKeyDown, "key")
 registerHotkey(HK_CANCEL, onCancel, "cancel")
+installForegroundWatch()                     ; reclaim head-of-chain on focus change
+SetTimer(reassertKeybdHook, 2500)            ; ... and periodically, for in-place reconnects
+initRawInput()                               ; parallel trigger: raw HID input, not the hook chain
 OnExit(onExitCleanup)
 setIdleTip()
 startDaemon()
@@ -131,8 +166,11 @@ TrayTip((HK_MODE = "hold" ? "Hold " HK_KEY " to talk" : "Press " HK_KEY " to dic
 ; --------------------------------------------------------------- registration
 registerHotkey(combo, handler, name) {
     global
+    ; "$" forces the hook implementation for this hotkey (see InstallKeybdHook
+    ; above) instead of RegisterHotkey, which a VDI client's hook always beats.
+    hk := InStr(combo, "$") ? combo : "$" combo
     try {
-        Hotkey(combo, (*) => handler())
+        Hotkey(hk, (*) => handler())
     } catch as e {
         MsgBox("Invalid [hotkey] " name ' = "' combo '" in config.ini`n`n'
             . e.Message
@@ -141,73 +179,267 @@ registerHotkey(combo, handler, name) {
     }
 }
 
-; -------------------------------------------------------------- hotkey actions
-; push-to-talk: hold to record, release to transcribe + insert
-onKeyDown() {
+; ---------------------------------------------------- keyboard-hook priority
+; Re-insert our keyboard hook at the head of the WH_KEYBOARD_LL chain so it runs
+; before a remote-desktop client's hook (the client installs its hook when it
+; starts / when a session connects, which would otherwise put it ahead of ours).
+reassertKeybdHook() {
     global
-    if (gState != "idle")
-        return
-    if !ensureDaemon()
-        return
-
-    clearSignals()
-    gPressTick := A_TickCount
-    gState := "starting"
-    setTip("preparing...")
-    toastShow("prep")                           ; on screen immediately
-    FileAppend("1", CTL_START)
-    SetTimer(ctlWatch, 50)
-    dbg("key down -> start")
-
-    KeyWait(HK_BAREKEY)                         ; block until the key is released
-
-    toastHide()                                 ; keys lifted -> indicator gone
-    if (gState = "idle") {                      ; watcher already finished it
-        dbg("key up but already idle")
-        return
-    }
-    SendInput("{Ctrl up}{Shift up}{Alt up}{LWin up}{RWin up}")
-    held := A_TickCount - gPressTick
-    if (held < HK_MINHOLD) {
-        FileAppend("1", CTL_CANCEL)             ; accidental tap -> abort quietly
-        setTip("tap ignored")
-        dbg("key up held=" held "ms < " HK_MINHOLD " -> cancel")
-    } else {
-        FileAppend("1", CTL_STOP)
-        gState := "transcribing"
-        setTip("transcribing...")
-        dbg("key up held=" held "ms -> stop")
-    }
+    if (gState = "idle")                     ; don't disturb an in-progress KeyWait
+        try InstallKeybdHook(true, true)
 }
 
-; toggle: press to start, press again to stop
-onToggle() {
+; A short burst of re-asserts: the client may (re)install its own hook a beat
+; after it gains focus, so grab the head of the chain again a few more times.
+reassertBurst() {
+    global gBurstLeft
+    gBurstLeft := 5
+    reassertBurstTick()
+}
+reassertBurstTick() {
+    global gBurstLeft
+    reassertKeybdHook()
+    if (--gBurstLeft > 0)
+        SetTimer(reassertBurstTick, -400)
+}
+
+; Fire reassertKeybdHook() whenever the foreground window changes -- i.e. every
+; time you click into (or out of) the Cloud Desktop.
+installForegroundWatch() {
     global
-    if (gState = "idle") {
-        if !ensureDaemon()
-            return
+    gWinEventCb := CallbackCreate(onForegroundChanged, "F", 7)
+    ; SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, NULL, cb,
+    ;                 0, 0, WINEVENT_OUTOFCONTEXT)
+    gWinEventHook := DllCall("SetWinEventHook"
+        , "uint", 0x0003, "uint", 0x0003
+        , "ptr", 0, "ptr", gWinEventCb
+        , "uint", 0, "uint", 0
+        , "uint", 0x0000, "ptr")
+}
+
+onForegroundChanged(hHook, event, hwnd, idObject, idChild, thread, ms) {
+    reassertBurst()
+}
+
+; -------------------------------------------------------------- talk primitives
+; Idempotent start / stop / cancel shared by BOTH trigger sources -- the forced
+; keyboard hook (onKeyDown / onToggle / onCancel) and the raw-input listener
+; (onTriggerDown / onTriggerUp). The gState / gTalkActive guards mean whichever
+; source fires first does the work and the other is a harmless no-op.
+talkStart() {
+    global
+    prev := Critical("On")
+    if (gState = "idle" && ensureDaemon()) {
         clearSignals()
+        gPressTick := A_TickCount
         gState := "starting"
+        gTalkActive := true
         setTip("preparing...")
-        toastShow("prep")
+        toastShow("prep")                       ; on screen immediately
+        buttonState("prep")
         FileAppend("1", CTL_START)
         SetTimer(ctlWatch, 50)
-    } else if (gState = "recording") {
-        FileAppend("1", CTL_STOP)
-        gState := "transcribing"
-        setTip("transcribing...")
+        dbg("talk start")
+    }
+    Critical(prev)
+}
+
+; checkMinHold = true (push-to-talk): a sub-min_hold_ms press is an accidental
+; tap and is cancelled instead of transcribed.
+talkStop(checkMinHold := false) {
+    global
+    prev := Critical("On")
+    if (gTalkActive) {
+        gTalkActive := false
         toastHide()
-        SendInput("{Ctrl up}{Shift up}{Alt up}{LWin up}{RWin up}")
+        buttonState("prep")                     ; transcribing... back to idle in finishResult
+        if (gState != "idle") {
+            SendInput("{Ctrl up}{Shift up}{Alt up}{LWin up}{RWin up}")
+            held := A_TickCount - gPressTick
+            if (checkMinHold && held < HK_MINHOLD) {
+                FileAppend("1", CTL_CANCEL)      ; accidental tap -> abort quietly
+                setTip("tap ignored")
+                dbg("talk stop held=" held "ms < " HK_MINHOLD " -> cancel")
+            } else {
+                FileAppend("1", CTL_STOP)
+                gState := "transcribing"
+                setTip("transcribing...")
+                dbg("talk stop held=" held "ms -> transcribe")
+            }
+        }
+    }
+    Critical(prev)
+}
+
+talkCancel() {
+    global
+    prev := Critical("On")
+    gTalkActive := false
+    if (gState != "idle") {
+        FileAppend("1", CTL_CANCEL)
+        setTip("cancelling...")
+        toastHide()
+        dbg("talk cancel")
+    }
+    buttonState("idle")
+    Critical(prev)
+}
+
+; -------------------------------------------------------------- hotkey actions
+; (forced-hook path -- fires when a host window has focus, or when our hook wins
+;  the chain over the VDI client's; the raw-input path covers the rest.)
+onKeyDown() {                                   ; push-to-talk: hold to record
+    global
+    talkStart()
+    if (gState = "idle")
+        return
+    KeyWait(HK_BAREKEY)                         ; block until the key is released
+    talkStop(true)
+}
+
+onToggle() {                                    ; press to start, press again to stop
+    global
+    if (gState = "idle")
+        talkStart()
+    else if (gState = "recording")
+        talkStop(false)
+}
+
+onCancel() => talkCancel()
+
+; ------------------------------------------------------- raw-input keyboard trigger
+; A VDI client (Omnisa/VMware Horizon, Citrix) can capture the keyboard below the
+; Win32 hook chain, so the hook hotkeys above never fire while its window has
+; focus. Raw input (WM_INPUT with RIDEV_INPUTSINK) is a separate pipeline: it is
+; delivered to every registered window regardless of focus and cannot be consumed
+; by another process, so it keeps working. It can't SUPPRESS the key, so the
+; combo also reaches the guest -- harmless for Ctrl+Space; pick a spare key
+; ([hotkey] key = SC152 / Pause / AppsKey ...) if that bothers a guest app.
+parseTrigger(combo) {
+    o := { ctrl: false, alt: false, shift: false, win: false, vk: 0 }
+    i := 1, n := StrLen(combo)
+    while (i <= n) {
+        c := SubStr(combo, i, 1)
+        if (c = "^")
+            o.ctrl := true
+        else if (c = "!")
+            o.alt := true
+        else if (c = "+")
+            o.shift := true
+        else if (c = "#")
+            o.win := true
+        else if (c = "<" || c = ">" || c = "*" || c = "~" || c = "$" || c = " " || c = "`t")
+            i := i                               ; side / behaviour prefix -- ignore
+        else
+            break
+        i += 1
+    }
+    name := Trim(SubStr(combo, i), " `t")
+    try o.vk := GetKeyVK(name)
+    return o
+}
+
+initRawInput() {
+    global
+    RID_MAIN   := parseTrigger(HK_KEY)
+    RID_CANCEL := parseTrigger(HK_CANCEL)
+    if !RID_MAIN.vk {
+        dbg("raw-input: can't map [hotkey] key '" HK_KEY "' to a VK -- raw trigger off")
+        return
+    }
+    ; RAWINPUTDEVICE: usUsagePage=1 (generic desktop), usUsage=6 (keyboard),
+    ; dwFlags=RIDEV_INPUTSINK (0x100 -> receive even without focus), hwndTarget.
+    rid := Buffer(A_PtrSize = 8 ? 16 : 12, 0)
+    NumPut("ushort", 0x01, rid, 0)
+    NumPut("ushort", 0x06, rid, 2)
+    NumPut("uint", 0x00000100, rid, 4)
+    NumPut("ptr", A_ScriptHwnd, rid, 8)
+    if !DllCall("RegisterRawInputDevices", "ptr", rid, "uint", 1, "uint", rid.Size) {
+        dbg("raw-input: RegisterRawInputDevices failed (err " A_LastError ")")
+        return
+    }
+    OnMessage(0x00FF, onRawInput)               ; WM_INPUT
+    gRawOK := true
+    dbg("raw-input: listening (main vk=" RID_MAIN.vk " cancel vk=" RID_CANCEL.vk ")")
+}
+
+rawModsMatch(s) {
+    global
+    return (gRawCtrl = s.ctrl) && (gRawAlt = s.alt) && (gRawShift = s.shift) && (gRawWin = s.win)
+}
+
+onRawInput(wParam, lParam, *) {
+    global
+    static RID_INPUT := 0x10000003
+    static HDRSIZE   := (A_PtrSize = 8 ? 24 : 16)   ; sizeof(RAWINPUTHEADER)
+    static buf       := Buffer(64, 0)               ; RAWINPUT(keyboard) is 40 bytes
+
+    size := buf.Size
+    if (DllCall("GetRawInputData", "ptr", lParam, "uint", RID_INPUT, "ptr", buf,
+                "uint*", &size, "uint", HDRSIZE, "int") < 1)
+        return
+    if (NumGet(buf, 0, "uint") != 1)            ; RIM_TYPEKEYBOARD
+        return
+
+    ; RAWKEYBOARD @ HDRSIZE:  MakeCode u16 | Flags u16 @+2 | Reserved u16 | VKey u16 @+6
+    flags := NumGet(buf, HDRSIZE + 2, "ushort")
+    vk    := NumGet(buf, HDRSIZE + 6, "ushort")
+    if (vk = 0 || vk = 0xFF)                    ; overrun / escaped fake-shift
+        return
+    isUp := (flags & 0x01)                      ; RI_KEY_BREAK
+
+    if (vk = 0x10 || vk = 0xA0 || vk = 0xA1)
+        gRawShift := !isUp
+    else if (vk = 0x11 || vk = 0xA2 || vk = 0xA3)
+        gRawCtrl := !isUp
+    else if (vk = 0x12 || vk = 0xA4 || vk = 0xA5)
+        gRawAlt := !isUp
+    else if (vk = 0x5B || vk = 0x5C)
+        gRawWin := !isUp
+
+    if (vk = RID_MAIN.vk) {
+        if (!isUp && !gRawMainDown) {           ; down edge (ignore auto-repeat)
+            gRawMainDown := true
+            dbg("raw: trigger key down (ctrl=" gRawCtrl " shift=" gRawShift ")")
+            onTriggerDown()
+        } else if (isUp && gRawMainDown) {
+            gRawMainDown := false
+            onTriggerUp()
+        }
+    }
+    if (RID_CANCEL.vk && RID_CANCEL.vk != RID_MAIN.vk && vk = RID_CANCEL.vk) {
+        if (!isUp && !gRawCancelDown) {
+            gRawCancelDown := true
+            if rawModsMatch(RID_CANCEL)
+                talkCancel()
+        } else if (isUp) {
+            gRawCancelDown := false
+        }
     }
 }
 
-onCancel() {
+onTriggerDown() {
     global
-    if (gState = "idle")
+    if (RID_CANCEL.vk = RID_MAIN.vk && rawModsMatch(RID_CANCEL)) {
+        talkCancel()
         return
-    FileAppend("1", CTL_CANCEL)
-    setTip("cancelling...")
-    toastHide()
+    }
+    if !rawModsMatch(RID_MAIN)
+        return
+    if (HK_MODE = "toggle") {
+        if (gState = "idle")
+            talkStart()
+        else if (gState = "recording")
+            talkStop(false)
+    } else {
+        talkStart()
+    }
+}
+
+onTriggerUp() {
+    global
+    if (HK_MODE != "toggle")
+        talkStop(true)
 }
 
 ; --------------------------------------------------------------- state machine
@@ -220,6 +452,7 @@ ctlWatch() {
             setTip(HK_MODE = "hold" ? "RECORDING -- release to insert"
                                     : "RECORDING -- " HK_KEY " to stop")
             toastShow("rec")                    ; now actually recording
+            buttonState("rec")
             try SoundBeep(880, 80)
         }
     }
@@ -231,8 +464,10 @@ ctlWatch() {
     if (DAEMON_PID && !ProcessExist(DAEMON_PID)) {
         SetTimer(ctlWatch, 0)
         gState := "idle"
+        gTalkActive := false
         setIdleTip()
         toastHide()
+        buttonState("idle")
         TrayTip("Recorder daemon stopped -- see log", APP, 0x3)
     }
 }
@@ -241,12 +476,15 @@ finishResult() {
     global
     SetTimer(ctlWatch, 0)
     toastHide()
+    buttonState("idle")
     hadError := FileExist(CTL_ERROR)
     wasCancel := FileExist(CTL_CANCELLED)
     text := ""
     try text := FileRead(CTL_RESULT, "UTF-8")
     clearSignals()
     gState := "idle"
+    gTalkActive := false
+    gRawMainDown := false, gRawCancelDown := false   ; resync raw-input edge state
     setIdleTip()
 
     if hadError {
@@ -322,6 +560,7 @@ restartDaemon() {
         try ProcessClose(DAEMON_PID)
     DAEMON_PID := 0
     gState := "idle"
+    gTalkActive := false
     startDaemon()
     TrayTip("Recorder restarting...", APP, 0x1)
 }
@@ -351,6 +590,8 @@ warmWatch() {
 
 onExitCleanup(*) {
     global
+    if gWinEventHook
+        try DllCall("UnhookWinEvent", "ptr", gWinEventHook)
     try FileAppend("1", CTL_QUIT)
     Sleep(200)
     if (DAEMON_PID && ProcessExist(DAEMON_PID))
@@ -430,6 +671,151 @@ toastHide() {
     global
     if ToastGui
         try ToastGui.Hide()
+}
+
+; ------------------------------------------------------- floating mouse trigger
+; Left-click-hold = talk (hold mode) / click = start-stop (toggle mode).
+; Right-drag = move (position persisted to config.ini). +E0x08000000 = WS_EX_
+; NOACTIVATE so clicking it never pulls keyboard focus off the VDI session.
+buttonInit() {
+    global
+    if !C["button_enabled"]
+        return
+    s := A_ScreenDPI / 96
+    fs := Integer(C["button_font"])
+    BtnGui := Gui("-Caption +AlwaysOnTop +ToolWindow -DPIScale +E0x08000000")
+    BtnGui.MarginX := Round(20 * s), BtnGui.MarginY := Round(11 * s)
+    BtnGui.BackColor := "2B2B2B"
+    ; +E0x20 = WS_EX_TRANSPARENT: the label is skipped in hit-testing, so every
+    ; click lands on the GUI window itself (one place to handle press/hold).
+    BtnLbl := BtnGui.AddText("h" Round(fs * 2.3 * s) " 0x200 Center cFFFFFF BackgroundTrans +E0x20", "")
+    BtnLbl.SetFont("s" fs " bold", "Segoe UI")
+    for m in [0x200, 0x201, 0x202, 0x204, 0x205]     ; MOUSEMOVE / L-down/up / R-down/up
+        OnMessage(m, onBtnMouse)
+    buttonState("idle")
+    dbg("talk button: shown")
+}
+
+buttonState(st) {
+    global
+    if !BtnGui
+        return
+    if (st = "rec") {
+        BtnGui.BackColor := "C0392B"
+        BtnLbl.Text := Chr(0x25CF) "  REC"
+    } else if (st = "prep") {
+        BtnGui.BackColor := "3C3C3C"
+        BtnLbl.Text := Chr(0x25CB) "  " Chr(0x2026)
+    } else {
+        BtnGui.BackColor := "2B2B2B"
+        BtnLbl.Text := Chr(0x25CB) "  TALK"
+    }
+    buttonPlace()
+}
+
+buttonPlace() {
+    global
+    if !BtnGui
+        return
+    BtnGui.Show("NoActivate AutoSize")
+    hwnd := BtnGui.Hwnd
+    rc := Buffer(16)
+    DllCall("GetWindowRect", "ptr", hwnd, "ptr", rc)
+    w := NumGet(rc, 8, "int") - NumGet(rc, 0, "int")
+    h := NumGet(rc, 12, "int") - NumGet(rc, 4, "int")
+
+    wa := Buffer(16)
+    DllCall("SystemParametersInfo", "uint", 0x30, "uint", 0, "ptr", wa, "uint", 0)  ; SPI_GETWORKAREA
+    l := NumGet(wa, 0, "int"), t := NumGet(wa, 4, "int")
+    r := NumGet(wa, 8, "int"), b := NumGet(wa, 12, "int")
+    m := Round(C["button_margin"] * A_ScreenDPI / 96)
+
+    if (C["button_x"] >= 0 && C["button_y"] >= 0) {
+        x := C["button_x"], y := C["button_y"]
+    } else {
+        cx := l + ((r - l) - w) // 2
+        switch C["button_position"] {
+            case "top":          x := cx,           y := t + m
+            case "center":       x := cx,           y := t + ((b - t) - h) // 2
+            case "top-left":     x := l + m,        y := t + m
+            case "top-right":    x := r - w - m,    y := t + m
+            case "bottom":       x := cx,           y := b - h - m
+            case "bottom-left":  x := l + m,        y := b - h - m
+            default:             x := r - w - m,    y := b - h - m   ; bottom-right
+        }
+    }
+    x := Max(l, Min(x, r - w)), y := Max(t, Min(y, b - h))          ; keep on screen
+
+    rgn := DllCall("CreateRoundRectRgn", "int", 0, "int", 0, "int", w, "int", h
+        , "int", 16, "int", 16, "ptr")
+    DllCall("SetWindowRgn", "ptr", hwnd, "ptr", rgn, "int", true)
+    DllCall("SetWindowPos", "ptr", hwnd, "ptr", -1, "int", x, "int", y
+        , "int", w, "int", h, "uint", 0x10)                          ; HWND_TOPMOST, SWP_NOACTIVATE
+}
+
+onBtnMouse(wParam, lParam, msg, hwnd) {
+    global
+    if !BtnGui || (hwnd != BtnGui.Hwnd && (!BtnLbl || hwnd != BtnLbl.Hwnd))
+        return
+    if (DEBUG && msg != 0x200)
+        dbg("btn msg=" Format("0x{:X}", msg) " on " (hwnd = BtnGui.Hwnd ? "gui" : "lbl"))
+    switch msg {
+        case 0x201:                                        ; WM_LBUTTONDOWN -> talk
+            DllCall("SetCapture", "ptr", BtnGui.Hwnd)
+            if (HK_MODE = "toggle") {
+                if (gState = "idle")
+                    talkStart()
+                else if (gState = "recording")
+                    talkStop(false)
+            } else
+                talkStart()
+        case 0x202:                                        ; WM_LBUTTONUP
+            DllCall("ReleaseCapture")
+            if (HK_MODE != "toggle")
+                talkStop(true)
+        case 0x204:                                        ; WM_RBUTTONDOWN -> begin move
+            DllCall("SetCapture", "ptr", BtnGui.Hwnd)
+            pt := Buffer(8), DllCall("GetCursorPos", "ptr", pt)
+            wr := Buffer(16), DllCall("GetWindowRect", "ptr", BtnGui.Hwnd, "ptr", wr)
+            gBtnDrag := true
+            gBtnDX := NumGet(pt, 0, "int") - NumGet(wr, 0, "int")
+            gBtnDY := NumGet(pt, 4, "int") - NumGet(wr, 4, "int")
+        case 0x200:                                        ; WM_MOUSEMOVE
+            if gBtnDrag {
+                pt := Buffer(8), DllCall("GetCursorPos", "ptr", pt)
+                DllCall("SetWindowPos", "ptr", BtnGui.Hwnd, "ptr", -1
+                    , "int", NumGet(pt, 0, "int") - gBtnDX
+                    , "int", NumGet(pt, 4, "int") - gBtnDY
+                    , "int", 0, "int", 0, "uint", 0x11)             ; SWP_NOSIZE|SWP_NOACTIVATE
+            }
+        case 0x205:                                        ; WM_RBUTTONUP -> save position
+            if gBtnDrag {
+                gBtnDrag := false
+                DllCall("ReleaseCapture")
+                wr := Buffer(16), DllCall("GetWindowRect", "ptr", BtnGui.Hwnd, "ptr", wr)
+                C["button_x"] := NumGet(wr, 0, "int"), C["button_y"] := NumGet(wr, 4, "int")
+                try {
+                    IniWrite(C["button_x"], ConfigFile, "button", "x")
+                    IniWrite(C["button_y"], ConfigFile, "button", "y")
+                }
+            }
+    }
+    return 0
+}
+
+toggleButton() {
+    global
+    C["button_enabled"] := !C["button_enabled"]
+    try IniWrite(C["button_enabled"] ? "true" : "false", ConfigFile, "button", "enabled")
+    if (C["button_enabled"]) {
+        if BtnGui
+            buttonState(gState = "recording" ? "rec" : "idle")
+        else
+            buttonInit()
+    } else if BtnGui {
+        try BtnGui.Hide()
+    }
+    buildTray()
 }
 
 ; ----------------------------------------------------------------- injection
@@ -535,6 +921,10 @@ buildTray() {
     A_TrayMenu.Add("List audio devices", (*) => showDevices())
     A_TrayMenu.Add("Check transcription engine", (*) => warmupEngine())
     A_TrayMenu.Add("Restart recorder", (*) => restartDaemon())
+    A_TrayMenu.Add("Re-grab hotkey (after connecting to VDI)", (*) => (InstallKeybdHook(true, true), TrayTip("Hotkey re-grabbed", APP, 0x1)))
+    A_TrayMenu.Add("Floating talk button", (*) => toggleButton())
+    if C["button_enabled"]
+        A_TrayMenu.Check("Floating talk button")
     A_TrayMenu.Add("Open log", (*) => (FileExist(T_LOG) ? Run('notepad.exe "' T_LOG '"') : TrayTip("No log yet", APP, 0x1)))
     A_TrayMenu.Add("Debug logging", (*) => toggleDebug())
     if DEBUG

@@ -280,6 +280,11 @@ onnx-asr / faster-whisper models smaller and faster.
 | | `position` | `bottom` | `bottom`/`top`/`center`/`bottom-left`/`bottom-right`/`top-left`/`top-right` |
 | | `margin` | `90` | pixels from the screen edge |
 | | `font_size` | `12` | indicator text size (pt) |
+| `button` | `enabled` | `false` | floating mouse trigger — left-click-hold to talk, right-drag to move (for VDI clients that block every keyboard path) |
+| | `position` | `bottom-right` | same keywords as `toast` |
+| | `margin` | `28` | pixels from the screen edge |
+| | `font_size` | `11` | button text size (pt) |
+| | `x` / `y` | — | explicit pixel position; written automatically when you drag it |
 | `ui` | `start_hidden` / `launch_on_startup` / `show_tray_icon` | | UI window behaviour |
 | | `autostart_server` / `autostart_agent` | `true` | start these when the UI launches |
 
@@ -297,6 +302,26 @@ If text comes through wrong: `mode = Event` → raise `key_delay` to 20–40 →
 `chunk_delay` to 30–60 and lower `chunk_size` to 10 → last resort `mode = Text`.
 Keep the guest keyboard layout matching the host for `Raw` / `Event`.
 
+**The dictation key.** Some clients (Omnisa / VMware Horizon, Citrix) grab the
+keyboard while their window has focus, so a normal global hotkey never fires
+there. The agent works around it in three escalating ways:
+
+1. **Forced keyboard hook** at the head of the `WH_KEYBOARD_LL` chain, re‑asserted
+   on every focus change — enough for most clients.
+2. **Raw input** (`RIDEV_INPUTSINK`) — a separate pipeline the client can't
+   intercept. Note the key press then *also* reaches the guest (`Ctrl+Space` is
+   harmless in most apps; if not, set `[hotkey] key` to a spare key like `Pause`,
+   `AppsKey`, `ScrollLock`, `SC152`).
+3. **Floating talk button** (`[button] enabled = true`, or tray → *Floating talk
+   button*) — for clients that capture the keyboard so completely that even raw
+   input is blocked. A small always‑on‑top button: **left‑click‑hold to talk**
+   (click to start/stop in `mode = toggle`), **right‑drag to move**. Mouse clicks
+   on a separate host window aren't affected by the client's keyboard capture, so
+   this always works. It never takes focus off the VDI.
+
+Turn on `[general] debug` and watch `%TEMP%\saykey.log`: `raw: trigger key down`
+means path 2 is working; if that never appears with the VDI focused, use path 3.
+
 ---
 
 ## Troubleshooting
@@ -305,6 +330,7 @@ Keep the guest keyboard layout matching the host for `Raw` / `Event`.
 |---|---|
 | "Python executable not found" | run `scripts\install.ps1`; check `[general] python` |
 | Nothing on Ctrl+Space | another app / IME owns the hotkey — set `[hotkey] key = ^!Space`, tray → Reload |
+| Nothing on Ctrl+Space **only while the VDI window is focused** | the client is grabbing the keyboard. The agent forces its hook to the head of the chain and also listens via raw input. If `%TEMP%\saykey.log` (with `[general] debug`) shows no `raw: trigger key down` when you press the key with the VDI focused, the client blocks every keyboard path — enable the **floating talk button**: `[button] enabled = true` (tray → *Floating talk button*), then left-click-hold it to dictate |
 | "Recorder daemon failed to start" | check the log; usually a mic-permission or dependency issue. Tray → Restart recorder |
 | First word clipped | wait for the beep before speaking |
 | Long pause on first server start | model download — `scripts\run-server.ps1 logs -Follow` |

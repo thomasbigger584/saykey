@@ -11,6 +11,22 @@ This is the only platform-specific part of the project.
   files in `%TEMP%\saykey_ctl`. Press → `start`; release → `stop`.
 - Shows the on-screen recording indicator (`[toast]`), then injects the returned
   text with `SendInput "{Raw}…"` (scan-codes, never the clipboard).
+- Fires the dictation key from **two** independent paths so it still triggers when
+  a remote-desktop client (Omnisa/VMware Horizon, Citrix, RDP) grabs the keyboard
+  while its window has focus:
+  1. a forced keyboard hook (`$` hotkeys + `InstallKeybdHook`) re-inserted at the
+     **head of the WH_KEYBOARD_LL chain** on every foreground change (tray →
+     *Re-grab hotkey* forces it on demand);
+  2. a **raw-input listener** (`RegisterRawInputDevices` + `RIDEV_INPUTSINK`,
+     `WM_INPUT`) — a separate pipeline the client can't consume. It can't suppress
+     the key, so the combo also reaches the guest; use a spare `[hotkey] key` if
+     that matters.
+  3. a **floating mouse button** (`[button] enabled = true`) for clients that
+     capture the keyboard so completely even raw input is blocked — a borderless
+     `WS_EX_NOACTIVATE` always-on-top window: left-click-hold = talk, right-drag =
+     move (position persisted to `config.ini`).
+  All three feed one idempotent `talkStart` / `talkStop` / `talkCancel` core, so
+  whichever path sees the input first does the work.
 - Tray menu: config, audio devices, engine check, restart recorder, debug
   logging toggle, ASR Docker server submenu.
 
