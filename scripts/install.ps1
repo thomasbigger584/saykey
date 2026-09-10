@@ -177,12 +177,12 @@ Write-Host ""
 Ok "Setup complete -- nothing is running yet."
 Write-Host @"
 
-  Start Saykey
-  ------------
-    scripts\run.ps1
+  Start / stop Saykey
+  -------------------
+    scripts\run.ps1     start the tray app (-> ASR server + dictation agent)
+    scripts\stop.ps1    stop all of it again (nothing is uninstalled)
 
-  Launches the tray app, which starts the ASR server (Docker) and the
-  dictation agent. Right-click the tray icon for Settings.
+  Right-click the tray icon for Settings.
 
   Swap the transcription model
   ----------------------------

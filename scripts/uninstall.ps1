@@ -1,6 +1,6 @@
 #Requires -Version 5.1
 <#
-    uninstall.ps1 -- reverse install.ps1.
+    uninstall.ps1 -- reverse install.ps1.  (Just want to stop it? Use stop.ps1.)
 
     Removes everything install.ps1 / run-server.ps1 created inside this project:
       * running app + recorder daemon

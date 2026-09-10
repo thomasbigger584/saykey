@@ -50,9 +50,10 @@ saykey/
 │   ├── config_store.py  models_catalog.py  autostart.py  orchestrator.py  ...
 │   └── requirements.txt
 │
-├── scripts/                 two flows: install, then run  (Windows; PowerShell)
-│   ├── install.ps1  uninstall.ps1        one-time setup / teardown
-│   ├── run.ps1                           start everything (tray app)
+├── scripts/                 Windows; PowerShell
+│   ├── install.ps1                       one-time setup (deps, venv, model, image)
+│   ├── run.ps1   stop.ps1                start / stop everything
+│   ├── uninstall.ps1                     remove everything install.ps1 created
 │   └── run-server.ps1                    ASR Docker container management
 │
 ├── models/                  downloaded models (git-ignored, shared by recorder + server)
@@ -64,15 +65,18 @@ reads, so they always agree.
 
 ---
 
-## Two commands
+## Scripts
 
 ```powershell
 .\scripts\install.ps1     # one-time: deps, .venv, UI, fallback model, server image. Starts nothing.
 .\scripts\run.ps1         # start Saykey (tray app -> ASR server + dictation agent)
+.\scripts\stop.ps1        # stop all of it (keeps everything installed)
+.\scripts\uninstall.ps1   # remove .venv, models, config, Docker image, caches
 ```
 
 `install.ps1` is standalone: it creates every dependency on the machine and
-stops. `run.ps1` is the only thing that starts anything.
+stops. `run.ps1` is the only thing that starts anything; `stop.ps1` is its
+inverse and removes nothing.
 
 ## Desktop UI
 
@@ -203,6 +207,21 @@ Manage the ASR container directly (restart after a model change, logs, …):
 .\scripts\run-server.ps1 logs -Follow
 .\scripts\run-server.ps1 down
 ```
+
+---
+
+## Stop
+
+```powershell
+.\scripts\stop.ps1                # stop everything
+.\scripts\stop.ps1 -KeepServer    # ... but leave the ASR container running
+```
+
+Stops the tray app, the dictation agent (which deregisters the global hotkey),
+the resident recorder, and the ASR container, and clears the transient signal
+files in `%TEMP%`. It removes **nothing** installed — `.venv`, `models`,
+`config.ini`, the Docker image and the "launch on startup" setting all stay.
+`run.ps1` brings it straight back; `uninstall.ps1` is the one that deletes.
 
 ---
 
