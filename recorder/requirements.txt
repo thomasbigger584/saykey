@@ -1,4 +1,4 @@
-# VDI Dictate -- offline speech-to-text runtime.
+# Saykey -- offline speech-to-text runtime.
 # CPU-only. No PyTorch and no ffmpeg required: faster-whisper bundles
 # CTranslate2 + PyAV, and audio is fed in as a raw numpy array.
 

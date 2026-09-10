@@ -4,7 +4,7 @@
 Persistent
 
 ; ===========================================================================
-;  VDI Dictate -- local, offline speech-to-text for locked-down VDI clients
+;  Saykey -- local, offline speech-to-text for locked-down VDI clients
 ; ---------------------------------------------------------------------------
 ;  [hotkey] mode = hold   : HOLD Ctrl+Space to record, release to insert (PTT)
 ;  [hotkey] mode = toggle : press Ctrl+Space to start, press again to stop
@@ -16,16 +16,17 @@ Persistent
 ;  transcription backend warm so a key press starts capture in ~100 ms.
 ; ===========================================================================
 
-global APP := "VDI Dictate"
-global ScriptDir := A_ScriptDir
-global ConfigFile := ScriptDir "\config.ini"
-global ExampleFile := ScriptDir "\config.example.ini"
+global APP := "Saykey"
+; agent/ lives one level under the project root; everything else is ROOT-relative.
+global ROOT := RegExReplace(A_ScriptDir, "\\[^\\]+$")
+global ConfigFile := ROOT "\config.ini"
+global ExampleFile := ROOT "\config.example.ini"
 
 if !FileExist(ConfigFile) {
     if FileExist(ExampleFile)
         FileCopy(ExampleFile, ConfigFile)
     else {
-        MsgBox("Missing config.ini and config.example.ini.`nRun install.ps1 first.", APP, "Iconx")
+        MsgBox("Missing config.ini and config.example.ini.`nRun scripts\install.ps1 first.", APP, "Iconx")
         ExitApp()
     }
 }
@@ -68,18 +69,18 @@ global HK_BAREKEY := stripMods(HK_KEY)
 
 global PY := resolvePath(C["python"])
 if !FileExist(PY) {
-    MsgBox("Python executable not found:`n" PY "`n`nRun install.ps1 first.", APP, "Iconx")
+    MsgBox("Python executable not found:`n" PY "`n`nRun scripts\install.ps1 first.", APP, "Iconx")
     ExitApp()
 }
-global RECORDER := ScriptDir "\record.py"
+global RECORDER := ROOT "\recorder\record.py"
 if !FileExist(RECORDER) {
-    MsgBox("record.py not found next to this script.", APP, "Iconx")
+    MsgBox("recorder\record.py not found under " ROOT, APP, "Iconx")
     ExitApp()
 }
-global SERVERPS1 := ScriptDir "\run-server.ps1"
+global SERVERPS1 := ROOT "\scripts\run-server.ps1"
 
 ; ---- resident recorder: signal files in a %TEMP% control directory ---------
-global CTLDIR        := A_Temp "\vdi_dictate_ctl"
+global CTLDIR        := A_Temp "\saykey_ctl"
 global CTL_START     := CTLDIR "\start"
 global CTL_STOP      := CTLDIR "\stop"
 global CTL_CANCEL    := CTLDIR "\cancel"
@@ -90,8 +91,8 @@ global CTL_RESULT    := CTLDIR "\result.txt"
 global CTL_ERROR     := CTLDIR "\error"
 global CTL_CANCELLED := CTLDIR "\cancelled"
 global CTL_UP        := CTLDIR "\up"
-global T_LOG         := A_Temp "\vdi_dictate.log"
-global T_DEV         := A_Temp "\vdi_dictate_devices.txt"
+global T_LOG         := A_Temp "\saykey.log"
+global T_DEV         := A_Temp "\saykey_devices.txt"
 
 global gState := "idle"      ; idle | starting | recording | transcribing
 global gPressTick := 0
@@ -302,7 +303,7 @@ startDaemon() {
     if DEBUG
         args .= ' --debug'
     try {
-        Run(args, ScriptDir, "Hide", &pid)
+        Run(args, ROOT, "Hide", &pid)
     } catch as e {
         TrayTip("Could not start recorder daemon: " e.Message, APP, 0x3)
         return false
@@ -505,9 +506,10 @@ stripMods(combo) {
 }
 
 resolvePath(p) {
+    ; relative config paths (e.g. .venv\Scripts\pythonw.exe) are project-root relative
     if RegExMatch(p, "^([A-Za-z]:\\|\\\\)")
         return p
-    return A_ScriptDir "\" p
+    return ROOT "\" p
 }
 
 clearSignals() {
@@ -558,7 +560,7 @@ toggleDebug() {
 
 showDevices() {
     global
-    RunWait('"' PY '" "' RECORDER '" --list-devices --output="' T_DEV '"', ScriptDir, "Hide")
+    RunWait('"' PY '" "' RECORDER '" --list-devices --output="' T_DEV '"', ROOT, "Hide")
     if FileExist(T_DEV)
         Run('notepad.exe "' T_DEV '"')
 }
@@ -567,7 +569,7 @@ warmupEngine() {
     global
     TrayTip("Checking transcription backend...", APP, 0x1)
     try FileDelete(T_DEV)
-    RunWait('"' PY '" "' RECORDER '" --config="' ConfigFile '" --warmup --log-file="' T_DEV '"', ScriptDir, "Hide")
+    RunWait('"' PY '" "' RECORDER '" --config="' ConfigFile '" --warmup --log-file="' T_DEV '"', ROOT, "Hide")
     if FileExist(T_DEV)
         Run('notepad.exe "' T_DEV '"')
     else
@@ -581,5 +583,5 @@ serverAction(act) {
         return
     }
     hide := (act = "up" || act = "status" || act = "logs") ? "" : "Hide"
-    Run('powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' SERVERPS1 '" ' act, ScriptDir, hide)
+    Run('powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' SERVERPS1 '" ' act, ROOT, hide)
 }

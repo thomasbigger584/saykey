@@ -1,0 +1,8 @@
+# Build context is server/. Keep only what the image needs
+# (requirements*.txt, engines.py, app.py).
+docker-compose*.yml
+*.md
+.env
+.env.*
+__pycache__
+*.pyc

@@ -1,6 +1,6 @@
 #Requires -Version 5.1
 <#
-    install.ps1 -- one-shot setup for VDI Dictate (client side).
+    install.ps1 -- one-shot setup for Saykey (client side).
 
     - checks for / installs AutoHotkey v2 and Python (via winget, with consent)
     - creates .venv and installs requirements.txt  (capture + local fallback)
@@ -20,12 +20,14 @@ param(
     [string]$Engine = "parakeet",
     [string]$WhisperModel = "base.en",
     [switch]$StartServer,
+    [switch]$WithUI,
     [switch]$SkipModel,
     [switch]$Yes
 )
 
 $ErrorActionPreference = "Stop"
-$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$root = Split-Path -Parent $scriptDir          # project root (scripts/ is one level down)
 Set-Location $root
 
 function Info($m) { Write-Host "  $m" -ForegroundColor Cyan }
@@ -53,7 +55,7 @@ function Set-IniValue([string]$path, [string]$section, [string]$key, [string]$va
     Set-Content -Path $path -Value $out -Encoding ASCII
 }
 
-Write-Host "`n=== VDI Dictate installer ===`n"
+Write-Host "`n=== Saykey installer ===`n"
 
 # --- AutoHotkey v2 ------------------------------------------------------
 Info "Checking AutoHotkey v2 ..."
@@ -77,7 +79,7 @@ else {
         $ahk = $ahkCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
         if ($ahk) { Ok "AutoHotkey installed: $ahk" } else { Warn "Install v2 from https://www.autohotkey.com/" }
     }
-    else { Warn "Install AutoHotkey v2 from https://www.autohotkey.com/ before running vdi-dictate.ahk" }
+    else { Warn "Install AutoHotkey v2 from https://www.autohotkey.com/ before running the agent" }
 }
 
 # --- Python 3.9+ ------------------------------------------------------
@@ -109,9 +111,16 @@ Ok "venv ready"
 
 Info "Installing Python dependencies ..."
 & $venvPy -m pip install --upgrade pip --quiet
-& $venvPy -m pip install -r (Join-Path $root "requirements.txt")
+& $venvPy -m pip install -r (Join-Path $root "recorder\requirements.txt")
 if ($LASTEXITCODE -ne 0) { Die "pip install failed." }
 Ok "dependencies installed"
+
+if ($WithUI -or (-not $Yes -and (Ask "Install the desktop UI (tray app + settings)?"))) {
+    Info "Installing desktop UI dependencies (PySide6) ..."
+    & $venvPy -m pip install -r (Join-Path $root "ui\requirements.txt")
+    if ($LASTEXITCODE -eq 0) { Ok "UI installed -- launch it with:  scripts\run-ui.ps1" }
+    else { Warn "UI dependency install failed; run 'pip install -r ui\requirements.txt' later." }
+}
 
 # --- config.ini ----------------------------------------------------
 Info "Writing config.ini ..."
@@ -129,7 +138,7 @@ if ($SkipModel) {
 }
 else {
     Info "Downloading faster-whisper fallback model '$WhisperModel' ..."
-    & $venvPy (Join-Path $root "record.py") --backend local --config $cfg --warmup
+    & $venvPy (Join-Path $root "recorder\record.py") --backend local --config $cfg --warmup
     if ($LASTEXITCODE -eq 0) {
         Ok "fallback model ready"
         Set-IniValue $cfg "general" "offline" "true"
@@ -140,7 +149,7 @@ else {
 
 # --- audio devices -----------------------------------------------
 Info "Audio input devices:"
-& $venvPy (Join-Path $root "record.py") --list-devices
+& $venvPy (Join-Path $root "recorder\record.py") --list-devices
 
 # --- Docker ASR server -----------------------------------------
 if ($Backend -eq "server") {
@@ -154,40 +163,39 @@ if ($Backend -eq "server") {
     if ($dockerOk) {
         Ok "Docker is running."
         if ($StartServer -or (Ask "Build and start the ASR server now? (first build pulls several GB)")) {
-            & (Join-Path $root "run-server.ps1") up
+            & (Join-Path $scriptDir "run-server.ps1") up
         }
         else {
-            Info "Start it later with:   .\run-server.ps1 up"
+            Info "Start it later with:   scripts\run-server.ps1 up"
         }
     }
     else {
         Warn "Docker not available. The client will use the local Whisper fallback until you run:"
-        Warn "  (start Docker Desktop)  then   .\run-server.ps1 up"
+        Warn "  (start Docker Desktop)  then   scripts\run-server.ps1 up"
     }
 }
 
 Write-Host ""
 Ok "Setup complete."
-$howToRun = if ($ahk) { "`"$ahk`" `"$root\vdi-dictate.ahk`"" } else { "(install AutoHotkey v2 first)" }
+$howToRun = if ($ahk) { "`"$ahk`" `"$root\agent\saykey.ahk`"" } else { "(install AutoHotkey v2 first)" }
 Write-Host @"
 
   Start dictation
   ---------------
-    * double-click  vdi-dictate.ahk
-    * or:  powershell -ExecutionPolicy Bypass -File "$root\start.ps1"
+    * desktop UI:   scripts\run-ui.ps1
+    * agent only:   powershell -ExecutionPolicy Bypass -File "$root\scripts\run-agent.ps1"
     * or:  $howToRun
 
   Swap the transcription model
   ----------------------------
     edit config.ini -> [server] engine   (parakeet | parakeet-v3 | canary |
                                           whisper | onnx:<id> | fw:<id> | hf:<id>)
-    then:  .\run-server.ps1 restart
+    then:  scripts\run-server.ps1 restart   (or the UI's Models tab)
 
   Use it
   ------
     1. Click into your VDI / remote window.
-    2. Press Ctrl+Space, wait for the beep, speak.
-    3. Press Ctrl+Space again (or pause ~2 s). Text is typed in -- no clipboard.
+    2. Hold Ctrl+Space, speak, release. Text is typed in -- no clipboard.
 
   If the VDI drops/repeats characters: config.ini -> [injection] mode = Event
 "@ -ForegroundColor Gray

@@ -2,10 +2,10 @@
 """
 record.py -- local microphone capture + transcription dispatch.
 
-Part of the "VDI Dictate" project.
+Part of the "Saykey" project.
 
 Two ways to run:
-  * ``--serve``  the resident recorder daemon used by vdi-dictate.ahk: keeps the
+  * ``--serve``  the resident recorder daemon used by saykey.ahk: keeps the
                  microphone and transcription backend warm and is driven by
                  signal files in ``--control-dir`` (see serve() below).
   * one-shot     record once and exit -- used for ``--warmup``, ``--list-devices``,
@@ -420,7 +420,7 @@ def finish(args, text: str) -> None:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    default_cfg = str(Path(__file__).resolve().parent / "config.ini")
+    default_cfg = str(Path(__file__).resolve().parents[1] / "config.ini")  # project root
     p.add_argument("--config", default=default_cfg, help="path to config.ini")
     p.add_argument("--backend", default="", help="override [transcription] backend")
     p.add_argument("--server-url", default="", help="override [transcription] server_url")

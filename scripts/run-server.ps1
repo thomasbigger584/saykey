@@ -1,6 +1,6 @@
 #Requires -Version 5.1
 <#
-    run-server.ps1 -- manage the vdi-dictate ASR Docker container.
+    run-server.ps1 -- manage the Saykey ASR Docker container.
 
     The server-side model is chosen in config.ini -> [server] engine.
     Change it, then:  .\run-server.ps1 restart
@@ -31,8 +31,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$root = Split-Path -Parent $MyInvocation.MyCommand.Path
-Set-Location $root
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$root = Split-Path -Parent $scriptDir           # project root (scripts/ is one level down)
+$serverDir = Join-Path $root "server"
+Set-Location $serverDir
 
 function Info($m) { Write-Host "  $m" -ForegroundColor Cyan }
 function Warn($m) { Write-Host "  [!] $m" -ForegroundColor Yellow }
@@ -60,7 +62,7 @@ $model = Get-Ini "server" "model" ""
 $device = Get-Ini "server" "device" "auto"
 $quant = Get-Ini "server" "quantization" "none"
 $port = Get-Ini "server" "port" "9000"
-$image = Get-Ini "server" "image" "vdi-dictate-asr:latest"
+$image = Get-Ini "server" "image" "saykey-asr:latest"
 $upUrl = Get-Ini "server" "upstream_url" ""
 $upKey = Get-Ini "server" "upstream_key" ""
 

@@ -1,11 +1,15 @@
-# vdi-dictate ASR server
+# Saykey ASR server
 
 A small OpenAI-compatible speech-to-text service in front of a **swappable
 engine**. Default engine: **NVIDIA Parakeet TDT 0.6B v2** (English) via
 `onnx-asr` / ONNX Runtime, on the GPU.
 
-Runs as a Docker container. The AHK client (`backend = server` in `config.ini`)
+Runs as a Docker container. The recorder (`backend = server` in `../config.ini`)
 POSTs 16 kHz mono WAV and gets back text.
+
+This folder is self-contained: the Docker **build context is `server/` itself**
+(`docker-compose.yml` uses `context: .`), and the `../models` volume points at
+the project-root model cache shared with the local fallback.
 
 ## Endpoints
 
@@ -21,7 +25,8 @@ curl -F file=@sample.wav -F response_format=text http://localhost:9000/v1/audio/
 
 ## Choosing the model
 
-Set `[server] engine` in `../config.ini`, then `./run-server.ps1 restart`.
+Set `[server] engine` in `../config.ini`, then `..\scripts\run-server.ps1 restart`
+(or the UI's Models tab).
 
 | `engine` | Loads | Backend |
 |---|---|---|
@@ -47,10 +52,12 @@ at startup). `HF_HOME=/models` — model cache, bind-mounted to `../models`.
 ## Build profiles
 
 - GPU (default): `ORT_PACKAGE=onnxruntime-gpu`, CUDA 12 base image.
-- CPU: `run-server.ps1 -Cpu` → `ORT_PACKAGE=onnxruntime`.
-- `+transformers`: `run-server.ps1 -Hf` → also installs `requirements-hf.txt` (torch).
+- CPU: `..\scripts\run-server.ps1 -Cpu` → `ORT_PACKAGE=onnxruntime`.
+- `+transformers`: `..\scripts\run-server.ps1 -Hf` → also installs `requirements-hf.txt` (torch).
 
 ## Running without run-server.ps1
+
+From this `server/` directory:
 
 ```bash
 cp .env.example .env            # edit as needed
@@ -62,12 +69,12 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build   #
 
 ```bash
 pip install -r requirements.txt onnxruntime          # or onnxruntime-gpu
-cd server && ASR_ENGINE=parakeet uvicorn app:app --port 9000
+ASR_ENGINE=parakeet uvicorn app:app --port 9000      # run from this folder
 ```
 
 ## Notes
 
 - First start downloads the model into `../models` (Parakeet v2 ONNX ≈ 0.6–2.4 GB
-  depending on precision). `run-server.ps1 up` waits up to 5 min for it.
+  depending on precision). `..\scripts\run-server.ps1 up` waits up to 5 min for it.
 - If the CUDA execution provider fails to initialise (driver/cuDNN mismatch),
   ONNX Runtime falls back to CPU automatically. Force it with `[server] device = cpu`.

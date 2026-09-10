@@ -1,5 +1,5 @@
 """
-vdi-dictate ASR server.
+Saykey ASR server.
 
 An OpenAI-compatible speech-to-text endpoint in front of a swappable engine
 (Parakeet via onnx-asr by default). Designed to run in the bundled Docker
@@ -31,7 +31,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 
 from engines import EngineError, load_engine
 
-app = FastAPI(title="vdi-dictate ASR", version="1.0.0")
+app = FastAPI(title="Saykey ASR", version="1.0.0")
 
 _engine = None
 _engine_err: Optional[str] = None

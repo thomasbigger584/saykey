@@ -1,4 +1,4 @@
-# vdi-dictate ASR server.
+# Saykey ASR server.
 # Default: onnx-asr (NVIDIA Parakeet) on GPU via onnxruntime-gpu.
 #
 # Build args (set by docker-compose / run-server.ps1):
@@ -26,12 +26,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY server/requirements.txt server/requirements-hf.txt ./
+# build context is the server/ directory (see docker-compose.yml)
+COPY requirements.txt requirements-hf.txt ./
 RUN python -m pip install --upgrade pip \
     && python -m pip install -r requirements.txt "${ORT_PACKAGE}" \
     && if [ "$INSTALL_HF" = "true" ]; then python -m pip install -r requirements-hf.txt; fi
 
-COPY server/engines.py server/app.py ./
+COPY engines.py app.py ./
 
 EXPOSE 9000
 HEALTHCHECK --interval=15s --timeout=5s --start-period=300s --retries=40 \

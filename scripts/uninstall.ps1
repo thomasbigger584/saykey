@@ -12,7 +12,7 @@
 
     Options:
       -KeepModels        keep .\models (large; slow to re-download)
-      -KeepImage         keep the vdi-dictate-asr Docker image
+      -KeepImage         keep the saykey-asr Docker image
       -RemoveAutoHotkey  also `winget uninstall AutoHotkey.AutoHotkey`
       -RemovePython      also `winget uninstall Python.Python.3.12`
       -DryRun            show what would be removed, change nothing
@@ -33,7 +33,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$root = Split-Path -Parent $scriptDir          # project root (scripts/ is one level down)
 Set-Location $root
 
 function Info($m) { Write-Host "  $m" -ForegroundColor Cyan }
@@ -61,7 +62,7 @@ function Invoke-Native([scriptblock]$sb) {
     try { & $sb } finally { $ErrorActionPreference = $prev }
 }
 
-Write-Host "`n=== VDI Dictate uninstaller ===" -ForegroundColor White
+Write-Host "`n=== Saykey uninstaller ===" -ForegroundColor White
 if ($DryRun) { Warn "DRY RUN -- nothing will be changed" }
 if (-not $Yes -and -not $DryRun) {
     if (-not (Ask "Remove the local environment (.venv, models, config.ini, Docker image)?")) {
@@ -70,9 +71,9 @@ if (-not $Yes -and -not $DryRun) {
 }
 
 # --- 1. stop the running app + recorder daemon -------------------------
-Step "Stopping VDI Dictate processes"
+Step "Stopping Saykey processes"
 # the resident daemon records its PID here
-$upFile = Join-Path $env:TEMP 'vdi_dictate_ctl\up'
+$upFile = Join-Path $env:TEMP 'saykey_ctl\up'
 if (Test-Path $upFile) {
     $dpid = (Get-Content $upFile -ErrorAction SilentlyContinue | Select-Object -First 1)
     if ($dpid -match '^\d+$') {
@@ -80,12 +81,25 @@ if (Test-Path $upFile) {
         else { Stop-Process -Id ([int]$dpid) -Force -ErrorAction SilentlyContinue; Ok "stopped recorder daemon" }
     }
 }
+# the desktop UI (python -m ui)
+Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -and $_.CommandLine -match '\bui\b' -and $_.CommandLine -match '-m' -and $_.CommandLine -match [regex]::Escape($root) } |
+    ForEach-Object {
+        if ($DryRun) { Warn "would stop desktop UI PID $($_.ProcessId)" }
+        else { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; Ok "stopped desktop UI (PID $($_.ProcessId))" }
+    }
 # AutoHotkey instances running this script
 $ahkProcs = Get-CimInstance Win32_Process -Filter "Name='AutoHotkey64.exe' OR Name='AutoHotkey32.exe' OR Name='AutoHotkey.exe'" -ErrorAction SilentlyContinue |
-    Where-Object { $_.CommandLine -and $_.CommandLine -match 'vdi-dictate\.ahk' }
+    Where-Object { $_.CommandLine -and $_.CommandLine -match 'saykey\.ahk' }
 foreach ($p in $ahkProcs) {
     if ($DryRun) { Warn "would stop AutoHotkey PID $($p.ProcessId)" }
-    else { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue; Ok "stopped vdi-dictate.ahk (PID $($p.ProcessId))" }
+    else { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue; Ok "stopped saykey.ahk (PID $($p.ProcessId))" }
+}
+# UI "launch on startup" registry entry
+$runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+if (Get-ItemProperty -Path $runKey -Name 'Saykey' -ErrorAction SilentlyContinue) {
+    if ($DryRun) { Warn "would remove HKCU Run value 'Saykey'" }
+    else { Remove-ItemProperty -Path $runKey -Name 'Saykey' -Force; Ok "removed 'launch on startup' registry entry" }
 }
 # any stray record.py in this venv
 $venvPyw = Join-Path $root '.venv\Scripts'
@@ -95,8 +109,8 @@ Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe'" 
         if ($DryRun) { Warn "would stop record.py PID $($_.ProcessId)" }
         else { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; Ok "stopped record.py (PID $($_.ProcessId))" }
     }
-if (-not $ahkProcs -and -not $DryRun) { Ok "no vdi-dictate.ahk running" }
-Info "hotkeys are only registered while vdi-dictate.ahk runs -- stopping it deregisters them"
+if (-not $ahkProcs -and -not $DryRun) { Ok "no saykey.ahk running" }
+Info "hotkeys are only registered while saykey.ahk runs -- stopping it deregisters them"
 
 # auto-start shortcuts pointing at this project (install.ps1 doesn't create one,
 # but the README suggests adding it manually)
@@ -110,7 +124,7 @@ foreach ($dir in $startupDirs) {
     Get-ChildItem -LiteralPath $dir -Filter '*.lnk' -ErrorAction SilentlyContinue | ForEach-Object {
         $t = ""
         try { $t = ($sh.CreateShortcut($_.FullName)).TargetPath + " " + ($sh.CreateShortcut($_.FullName)).Arguments } catch {}
-        if ($t -match [regex]::Escape($root) -and $t -match 'vdi-dictate|start\.ps1') {
+        if ($t -match [regex]::Escape($root) -and $t -match 'saykey|run-agent|run-ui|\bui\b') {
             Remove-Path $_.FullName "auto-start shortcut ($($_.Name))"
         }
     }
@@ -124,23 +138,23 @@ if (Get-Command docker -ErrorAction SilentlyContinue) {
     $dockerOk = ($LASTEXITCODE -eq 0)
 }
 if ($dockerOk) {
-    $img = "vdi-dictate-asr:latest"
+    $img = "saykey-asr:latest"
     if (Test-Path (Join-Path $root 'config.ini')) {
         # honour a custom [server] image tag
         $line = Select-String -Path (Join-Path $root 'config.ini') -Pattern '^\s*image\s*=\s*(.+)$' -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($line) { $img = $line.Matches[0].Groups[1].Value.Trim() }
     }
-    $composeF = Join-Path $root 'docker-compose.yml'
+    $composeF = Join-Path $root 'server\docker-compose.yml'
     $rmi = if ($KeepImage) { "none" } else { "local" }
     if ($DryRun) {
-        Warn "would run: docker compose -f docker-compose.yml down --remove-orphans --volumes --rmi $rmi"
-        Warn "would run: docker rm -f vdi-dictate-asr"
+        Warn "would run: docker compose -f server\docker-compose.yml down --remove-orphans --volumes --rmi $rmi"
+        Warn "would run: docker rm -f saykey-asr"
         if (-not $KeepImage) { Warn "would run: docker image rm -f $img" }
     }
     else {
         Invoke-Native { docker compose -f $composeF down --remove-orphans --volumes --rmi $rmi 2>&1 | Out-Null }
         # belt-and-braces: the container / image by name, in case compose state is gone
-        Invoke-Native { docker rm -f vdi-dictate-asr 2>&1 | Out-Null }
+        Invoke-Native { docker rm -f saykey-asr 2>&1 | Out-Null }
         Ok "ASR server stopped and container removed"
         if (-not $KeepImage) {
             Invoke-Native { docker image rm -f $img 2>&1 | Out-Null }
@@ -151,7 +165,7 @@ if ($dockerOk) {
 }
 else {
     Warn "Docker not running -- container/image (if any) left in place."
-    Warn "Start Docker Desktop and re-run, or:  docker rm -f vdi-dictate-asr ; docker image rm vdi-dictate-asr:latest"
+    Warn "Start Docker Desktop and re-run, or:  docker rm -f saykey-asr ; docker image rm saykey-asr:latest"
 }
 
 # --- 3. project-local files ----------------------------------------
@@ -160,17 +174,23 @@ Remove-Path (Join-Path $root '.venv')        "Python virtual environment (.venv)
 if ($KeepModels) { Info "kept .\models (-KeepModels)" }
 else { Remove-Path (Join-Path $root 'models') "downloaded models (.\models)" }
 Remove-Path (Join-Path $root 'config.ini')    "config.ini (generated from config.example.ini)"
-Remove-Path (Join-Path $root '.env')          ".env"
-Remove-Path (Join-Path $root '__pycache__')   "__pycache__"
-Remove-Path (Join-Path $root 'server\__pycache__') "server\__pycache__"
-Remove-Path (Join-Path $root 'transcript.txt') "transcript.txt"
-Get-ChildItem -LiteralPath $root -Filter '*.log' -File -ErrorAction SilentlyContinue | ForEach-Object { Remove-Path $_.FullName $_.Name }
-Get-ChildItem -LiteralPath $root -Filter '*.wav' -File -ErrorAction SilentlyContinue | ForEach-Object { Remove-Path $_.FullName $_.Name }
+Remove-Path (Join-Path $root 'server\.env')   "server\.env"
+foreach ($pc in 'recorder\__pycache__', 'server\__pycache__', 'ui\__pycache__', 'ui\widgets\__pycache__') {
+    Remove-Path (Join-Path $root $pc) $pc
+}
+# stray transcripts / recordings / logs in the project (never recurse -- .venv etc.)
+foreach ($dir in @($root, (Join-Path $root 'recorder'), (Join-Path $root 'agent'))) {
+    if (-not (Test-Path $dir)) { continue }
+    foreach ($pat in 'transcript.txt', '*.log', '*.wav') {
+        Get-ChildItem -Path $dir -Filter $pat -File -ErrorAction SilentlyContinue |
+            ForEach-Object { Remove-Path $_.FullName $_.Name }
+    }
+}
 
 # --- 4. temp / IPC files ------------------------------------------
 Step "Removing temp files"
-Remove-Path (Join-Path $env:TEMP 'vdi_dictate_ctl')       "recorder control directory"
-Get-ChildItem -LiteralPath $env:TEMP -Filter 'vdi_dictate*' -ErrorAction SilentlyContinue | ForEach-Object { Remove-Path $_.FullName "%TEMP%\$($_.Name)" }
+Remove-Path (Join-Path $env:TEMP 'saykey_ctl')       "recorder control directory"
+Get-ChildItem -LiteralPath $env:TEMP -Filter 'saykey*' -ErrorAction SilentlyContinue | ForEach-Object { Remove-Path $_.FullName "%TEMP%\$($_.Name)" }
 
 # --- 5. optional: winget-installed prerequisites -----------------
 if ($RemoveAutoHotkey -or $RemovePython) {

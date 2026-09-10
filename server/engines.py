@@ -1,5 +1,5 @@
 """
-Pluggable ASR engines for the vdi-dictate server.
+Pluggable ASR engines for the Saykey server.
 
 The engine is chosen with the ASR_ENGINE env var (config.ini -> [server] engine):
 
@@ -198,7 +198,7 @@ class OpenAIProxyEngine(_Base):
             wf.writeframes((np.clip(audio, -1, 1) * 32767).astype("<i2").tobytes())
         wav = buf.getvalue()
 
-        boundary = "----vdidictate" + os.urandom(8).hex()
+        boundary = "----saykey" + os.urandom(8).hex()
         chunks = []
         for name, value in (("model", self.model), ("language", language or ""),
                             ("response_format", "json")):

@@ -1,21 +1,23 @@
-name: vdi-dictate
+name: saykey
 
-# Base (CPU) definition. run-server.ps1 adds docker-compose.gpu.yml when an
-# NVIDIA GPU is available. You can also run directly:
+# Base (CPU) definition. scripts/run-server.ps1 adds docker-compose.gpu.yml when
+# an NVIDIA GPU is available. From this server/ directory you can also run:
 #   docker compose up -d --build                       (CPU)
 #   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+# Relative paths (build context, ./models volume) resolve against server/, so the
+# model cache lands in ../models at the project root.
 
 services:
   asr:
     build:
       context: .
-      dockerfile: server/Dockerfile
+      dockerfile: Dockerfile
       args:
         ORT_PACKAGE: ${ORT_PACKAGE:-onnxruntime}
         INSTALL_HF: ${INSTALL_HF:-false}
         CUDA_IMAGE: ${CUDA_IMAGE:-nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04}
-    image: ${ASR_IMAGE:-vdi-dictate-asr:latest}
-    container_name: vdi-dictate-asr
+    image: ${ASR_IMAGE:-saykey-asr:latest}
+    container_name: saykey-asr
     ports:
       - "${ASR_PORT:-9000}:9000"
     environment:
@@ -29,5 +31,5 @@ services:
       HF_HOME: /models
       HF_HUB_DISABLE_TELEMETRY: "1"
     volumes:
-      - ./models:/models
+      - ../models:/models
     restart: unless-stopped

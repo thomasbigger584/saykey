@@ -1,6 +1,6 @@
 #Requires -Version 5.1
-# Launch vdi-dictate.ahk with whichever AutoHotkey v2 runtime is installed.
-$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+# Launch the Windows dictation agent (agent/saykey.ahk) with AutoHotkey v2.
+$root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 
 $candidates = @(
     "$env:ProgramFiles\AutoHotkey\v2\AutoHotkey64.exe",
@@ -15,10 +15,10 @@ if (-not $ahk) {
     if ($c) { $ahk = $c.Source }
 }
 if (-not $ahk) {
-    Write-Error "AutoHotkey v2 not found. Run install.ps1 or install it from https://www.autohotkey.com/"
+    Write-Error "AutoHotkey v2 not found. Run scripts\install.ps1 or install it from https://www.autohotkey.com/"
     exit 1
 }
 
-$script = Join-Path $root "vdi-dictate.ahk"
-Write-Host "Starting VDI Dictate ..." -ForegroundColor Cyan
+$script = Join-Path $root "agent\saykey.ahk"
+Write-Host "Starting Saykey agent ..." -ForegroundColor Cyan
 Start-Process -FilePath $ahk -ArgumentList "`"$script`""
