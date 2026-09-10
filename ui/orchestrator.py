@@ -47,13 +47,23 @@ def docker_available() -> bool:
 
 
 def _has_nvidia_gpu() -> bool:
+    return gpu_name() is not None
+
+
+def gpu_name() -> str | None:
+    """Name of the first NVIDIA GPU, or None (no nvidia-smi / no GPU / macOS)."""
     if not shutil.which("nvidia-smi"):
-        return False
+        return None
     try:
-        return subprocess.run(["nvidia-smi", "-L"], capture_output=True,
-                              timeout=8, creationflags=_NO_WINDOW).returncode == 0
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=8, creationflags=_NO_WINDOW)
+        if out.returncode != 0:
+            return None
+        name = (out.stdout or "").splitlines()[0].strip()
+        return name or None
     except Exception:  # noqa: BLE001
-        return False
+        return None
 
 
 def _compose_cmd(settings: Settings, extra: list[str]) -> list[str]:

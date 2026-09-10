@@ -86,19 +86,24 @@ A cross-platform tray app (**PySide6** — one Python codebase for Windows / mac
 - **One tray icon** (colour reflects state). On launch it starts the ASR server
   (Docker) and, on Windows, the headless dictation agent (`agent/saykey.ahk`) —
   the agent has no icon or notifications of its own.
-- **Status panel** at the top of the window: current activity (idle / recording /
-  transcribing), server and agent state, and a live feed of updates — everything
-  that used to be a system-tray balloon now lands here instead.
-- **Settings → General:** transcribe shortcut (**Change…** → press the combo —
-  the agent pauses so the keys land in the field; **Reset** → back to Ctrl+Space),
-  hold-vs-toggle, microphone, floating talk button.
-  **Advanced:** start hidden / launch on startup / show
-  tray icon, and a **Developer options** toggle (debugging, autostart of server
-  & agent, and the tray's Developer submenu). **Models:** pick from the
-  catalogue (Parakeet EN 0.6B default) — applying it rebuilds + restarts the
-  server.
-- **start hidden**, **launch on OS startup**, single-instance (relaunch reopens
-  the window). Everything is written to the same `config.ini`.
+- **Dashboard** — the default view: a big state‑coloured glowing mic (Ready /
+  Recording / Transcribing / Error), the current instruction ("Hold **Ctrl+Space**
+  to talk"), and quick actions.
+- **Settings** — a left navigation rail: **General** (language, startup, tray) ·
+  **Dictation & Hotkeys** (hotkey recorder, hold-vs-toggle, microphone with a
+  live meter, floating‑button / toast toggles + positions, and a collapsible
+  *Tuning (VDI Safe Injection)* group for injection mode / key‑delay / chunking) ·
+  **ASR Engine & Models** (model cards badged GPU‑Docker vs Local‑CPU, the active
+  one marked *CURRENT*, plus detected‑hardware context) · **Advanced & Developer**
+  (debugging, autostart, and the recent‑activity log).
+- A **status bar** on every view: ASR Server and Dictation Agent state (the live
+  mic meter lives on the Dictation panel).
+- **Save / Cancel**: `Save` writes every change to `config.ini` and returns to the
+  dashboard; it only restarts the agent or rebuilds the ASR container when a
+  setting that actually needs it changed (picking a different model is the only
+  thing that touches Docker).
+- **start hidden**, **launch on OS startup**, single‑instance (relaunch reopens
+  the window).
 
 > The dictation agent (global hotkey + keystroke injection) is Windows-only for
 > now via AutoHotkey. A native macOS/Linux agent (pynput-based) is the planned
@@ -346,9 +351,11 @@ onnx-asr / faster-whisper models smaller and faster.
 | `Event` | `SendEvent "{Raw}…"` paced by `key_delay` | characters **dropped / doubled / reordered** in `Raw` |
 | `Text` | `SendText` Unicode events | non-Latin scripts, non-US guest layouts |
 
-If text comes through wrong: `mode = Event` → raise `key_delay` to 20–40 → raise
-`chunk_delay` to 30–60 and lower `chunk_size` to 10 → last resort `mode = Text`.
-Keep the guest keyboard layout matching the host for `Raw` / `Event`.
+Adjust these from **Settings → Dictation & Hotkeys → Tuning (VDI Safe Injection)**,
+or in `config.ini`. If text comes through wrong: `mode = Event` → raise
+`key_delay` to 20–40 → raise `chunk_delay` to 30–60 and lower `chunk_size` to 10
+→ last resort `mode = Text`. Keep the guest keyboard layout matching the host
+for `Raw` / `Event`.
 
 **The dictation key.** Some clients (Omnisa / VMware Horizon, Citrix) grab the
 keyboard while their window has focus, so a normal global hotkey never fires

@@ -1,7 +1,8 @@
 # Saykey desktop UI (cross-platform: Windows / macOS / Linux).
-# Install into the same .venv as requirements.txt:
-#     .venv\Scripts\python -m pip install -r requirements-ui.txt
+# Install into the same .venv as the recorder requirements:
+#     .venv\Scripts\python -m pip install -r ui/requirements.txt
 
 PySide6>=6.6
 sounddevice>=0.4.6
+numpy>=1.24          # live microphone level meter
 pynput>=1.7          # cross-platform hotkey capture; seed of the future native agent

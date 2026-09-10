@@ -45,10 +45,16 @@ _MAP = {
     "language":          ("general", "language", "en"),
     "debug":             ("general", "debug", "false"),
 
+    "injection_mode":    ("injection", "mode", "Raw"),
+    "key_delay":         ("injection", "key_delay", "10"),
+    "chunk_size":        ("injection", "chunk_size", "20"),
+    "chunk_delay":       ("injection", "chunk_delay", "15"),
+
     "toast_enabled":     ("toast", "enabled", "true"),
     "toast_position":    ("toast", "position", "bottom"),
 
     "button_enabled":    ("button", "enabled", "false"),
+    "button_position":   ("button", "position", "bottom-right"),
 
     "start_hidden":      ("ui", "start_hidden", "false"),
     "launch_on_startup": ("ui", "launch_on_startup", "false"),
@@ -62,7 +68,8 @@ _BOOLS = {
     "debug", "toast_enabled", "button_enabled", "start_hidden", "launch_on_startup",
     "show_tray_icon", "autostart_server", "autostart_agent", "developer_options",
 }
-_INTS = {"mic_device_index", "min_hold_ms", "max_seconds", "server_port"}
+_INTS = {"mic_device_index", "min_hold_ms", "max_seconds", "server_port",
+         "key_delay", "chunk_size", "chunk_delay"}
 
 
 @dataclass
@@ -84,9 +91,14 @@ class Settings:
     local_model: str = "base.en"
     language: str = "en"
     debug: bool = False
+    injection_mode: str = "Raw"
+    key_delay: int = 10
+    chunk_size: int = 20
+    chunk_delay: int = 15
     toast_enabled: bool = True
     toast_position: str = "bottom"
     button_enabled: bool = False
+    button_position: str = "bottom-right"
     start_hidden: bool = False
     launch_on_startup: bool = False
     show_tray_icon: bool = True

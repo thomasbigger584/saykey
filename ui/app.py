@@ -155,6 +155,9 @@ class App(QObject):
             self._settings_win = SettingsWindow()
             self._settings_win.applied.connect(self._on_settings_applied)
             self._settings_win.recording_hotkey.connect(self._suspend_agent)
+            self._settings_win.open_log.connect(self._open_log)
+            self._settings_win.edit_config.connect(self._edit_config)
+            self._settings_win.restart_agent.connect(self._restart_agent)
         self._settings_win.show()
         self._settings_win.raise_()
         self._settings_win.activateWindow()
@@ -173,8 +176,12 @@ class App(QObject):
         if "button_enabled" in changed and self.agent.running():
             self.agent.signal_button()
 
-        if any(k in changed for k in ("shortcut", "shortcut_mode", "mic_device_index",
-                                      "debug", "toast_enabled", "toast_position")):
+        # keys the agent / recorder read only at start-up -> restart to apply
+        _AGENT_KEYS = ("shortcut", "shortcut_mode", "mic_device_index", "debug",
+                       "toast_enabled", "toast_position", "button_position",
+                       "injection_mode", "key_delay", "chunk_size", "chunk_delay",
+                       "language")
+        if any(k in changed for k in _AGENT_KEYS):
             if self.agent.running():
                 self.agent.restart()
                 self.status.add("info", "Dictation agent restarted with new settings")
@@ -380,7 +387,12 @@ class App(QObject):
         self.tray.setToolTip(f"Saykey — {line}")
 
         if self._settings_win is not None and self._settings_win.isVisible():
-            self._settings_win.update_status(server_txt, agent_txt, self.status.events())
+            self._settings_win.set_status(
+                server_txt=server_txt,
+                agent_ok=agent,
+                activity=activity if agent else "stopped",
+                events=self.status.events(),
+                shortcut=self.settings.shortcut)
 
     # ------------------------------------------------------------- lifecycle
     def quit(self) -> None:
