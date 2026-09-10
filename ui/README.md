@@ -14,7 +14,7 @@ python -m ui            # Windows: ..\scripts\run.ps1
 * **Dashboard** (default view) — a big state-coloured glowing mic, the current
   usage instruction, and a **Settings** button.
 * **Settings** — a left **navigation rail**: General · Dictation & Hotkeys ·
-  ASR Engine & Models · Advanced & Developer. A single **Save** (and Cancel).
+  ASR Engine & Models · Advanced & Developer. A full-width footer with **Save** / **Cancel**.
 * A **status bar** across the bottom of every view: ASR Server and Dictation
   Agent state (the live mic meter is on the Dictation panel).
 
@@ -36,7 +36,7 @@ python -m ui            # Windows: ..\scripts\run.ps1
 | `widgets/settings_window.py` | the window shell — dashboard + nav rail + panel stack + status bar; owns Save / Cancel |
 | `widgets/dashboard.py` | the primary view (`GlowMic` + instructions) |
 | `widgets/nav_rail.py` · `widgets/status_bar.py` · `widgets/audio_meter.py` · `widgets/model_card.py` | reusable pieces |
-| `widgets/{general,dictation,models,advanced}_panel.py` | one file per settings panel; each exposes `load(s)` / `apply_to(s)` |
+| `widgets/{general,dictation,models,advanced}_panel.py` | one file per panel; each exposes `load(s)` / `apply_to(s)`. Advanced also has the activity log + a Quit button |
 
 Each panel reads/writes `config.ini` only through `config_store` and never
 touches keys it doesn't own; the shell diffs the result so `Save` only restarts

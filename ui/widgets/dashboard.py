@@ -149,6 +149,7 @@ class DashboardView(QWidget):
         btn_settings.setMinimumWidth(120)
         btn_settings.clicked.connect(self.open_settings)
         actions.addWidget(btn_settings)
+        actions.addStretch(1)
         body.addLayout(actions)
 
     # ---- driven by the window ------------------------------------------

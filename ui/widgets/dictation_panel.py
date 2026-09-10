@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QKeySequenceEdit,
@@ -123,37 +124,42 @@ class DictationPanel(QWidget):
         vil.addLayout(row2)
         v.addWidget(vi)
 
-        # ---- Tuning (collapsible, one compact row) ---------------
-        self.tuning = QGroupBox("TUNING (VDI SAFE INJECTION)")
-        self.tuning.setCheckable(True)
-        self.tuning.setChecked(False)
+        # ---- Tuning (always visible, grid) -----------------------
+        tuning = QGroupBox("TUNING (VDI SAFE INJECTION)")
         self.inj_mode = QComboBox()
         self.inj_mode.addItems(["Raw", "Event", "Text"])
-        self.inj_mode.setFixedWidth(110)
+        self.inj_mode.setFixedWidth(120)
         self.key_delay = QSpinBox()
         self.key_delay.setRange(0, 200)
+        self.key_delay.setSuffix(" ms")
         self.chunk_size = QSpinBox()
         self.chunk_size.setRange(0, 500)
         self.chunk_delay = QSpinBox()
         self.chunk_delay.setRange(0, 500)
+        self.chunk_delay.setSuffix(" ms")
         for sb in (self.key_delay, self.chunk_size, self.chunk_delay):
-            sb.setFixedWidth(70)
-        self._tuning_body = QWidget()
-        trow = QHBoxLayout(self._tuning_body)
-        trow.setContentsMargins(0, 6, 0, 0)
-        trow.setSpacing(8)
-        for text, widget in (("Mode", self.inj_mode), ("Key delay (ms)", self.key_delay),
-                             ("Chunk size", self.chunk_size), ("Chunk delay (ms)", self.chunk_delay)):
-            trow.addWidget(QLabel(text))
-            trow.addWidget(widget)
-            trow.addSpacing(8)
-        trow.addStretch(1)
-        tv = QVBoxLayout(self.tuning)
-        tv.setContentsMargins(0, 6, 0, 0)
-        tv.addWidget(self._tuning_body)
-        self.tuning.toggled.connect(self._tuning_body.setVisible)
-        self._tuning_body.setVisible(False)
-        v.addWidget(self.tuning)
+            sb.setFixedWidth(120)
+        grid = QGridLayout(tuning)
+        grid.setContentsMargins(4, 10, 4, 4)
+        grid.setHorizontalSpacing(14)
+        grid.setVerticalSpacing(12)
+        cells = [("Injection Mode", self.inj_mode), ("Key Delay", self.key_delay),
+                 ("Chunk Size", self.chunk_size), ("Chunk Delay", self.chunk_delay)]
+        for i, (text, widget) in enumerate(cells):
+            r, c = divmod(i, 2)
+            lbl = QLabel(text)
+            lbl.setMinimumWidth(110)
+            grid.addWidget(lbl, r, c * 2, Qt.AlignVCenter)
+            grid.addWidget(widget, r, c * 2 + 1, Qt.AlignVCenter | Qt.AlignLeft)
+        grid.setColumnMinimumWidth(1, 130)
+        grid.setColumnStretch(4, 1)
+        v.addWidget(tuning)
+
+        hint = QLabel("Raw is fastest; switch to Event (then raise the delays) or "
+                      "Text if a remote desktop drops or duplicates characters.")
+        hint.setWordWrap(True)
+        hint.setProperty("dim", True)
+        v.addWidget(hint)
         v.addStretch(1)
 
     # ---- data <-> widgets -------------------------------------------

@@ -10,9 +10,10 @@ from __future__ import annotations
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
-    QDialogButtonBox,
+    QFrame,
     QHBoxLayout,
     QMessageBox,
+    QPushButton,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -38,6 +39,7 @@ class SettingsWindow(QWidget):
     open_log = Signal()
     edit_config = Signal()
     restart_agent = Signal()
+    quit_app = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -58,6 +60,24 @@ class SettingsWindow(QWidget):
 
         self.stack.addWidget(self._build_settings())
 
+        # ---- full-width footer (Save / Cancel) -- settings view only ----
+        self._footer = QFrame()
+        self._footer.setObjectName("Footer")
+        self._footer.setStyleSheet(
+            f"QFrame#Footer {{ background: {theme.BG_ALT};"
+            f" border-top: 1px solid {theme.BORDER}; }}")
+        fl = QHBoxLayout(self._footer)
+        fl.setContentsMargins(14, 8, 14, 8)
+        fl.addStretch(1)
+        self.btn_cancel = QPushButton("Cancel")
+        self.btn_cancel.clicked.connect(self._cancel)
+        self.btn_save = QPushButton("Save")
+        self.btn_save.setProperty("accent", True)
+        self.btn_save.setMinimumWidth(96)
+        self.btn_save.clicked.connect(self._save_and_home)
+        fl.addWidget(self.btn_cancel)
+        fl.addWidget(self.btn_save)
+
         # ---- status bar + sampler -----------------------------------
         self.status_bar = StatusBar()
         self._audio = AudioLevel(self)
@@ -67,24 +87,22 @@ class SettingsWindow(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
         root.addWidget(self.stack, 1)
+        root.addWidget(self._footer)
         root.addWidget(self.status_bar)
 
+        self._footer.hide()          # dashboard is the default view
         self._load_all()
 
     # ------------------------------------------------------------- build
     def _build_settings(self) -> QWidget:
-        container = QWidget()
-        outer = QVBoxLayout(container)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
-
-        body = QHBoxLayout()
-        body.setContentsMargins(0, 0, 0, 0)
-        body.setSpacing(0)
+        body = QWidget()
+        row = QHBoxLayout(body)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
         self.nav = NavRail()
         self.nav.navigate.connect(self._navigate)
         self.nav.home.connect(self._show_dashboard)
-        body.addWidget(self.nav)
+        row.addWidget(self.nav)
 
         self.panels = QStackedWidget()
         self.p_general = GeneralPanel()
@@ -93,35 +111,26 @@ class SettingsWindow(QWidget):
         self.p_advanced = AdvancedPanel()
         for p in (self.p_general, self.p_dictation, self.p_models, self.p_advanced):
             self.panels.addWidget(p)
-        body.addWidget(self.panels, 1)
-        outer.addLayout(body, 1)
+        row.addWidget(self.panels, 1)
 
         self.p_dictation.recording_hotkey.connect(self.recording_hotkey)
         self.p_dictation.mic_changed.connect(self._audio_follow)
         self.p_advanced.open_log.connect(self.open_log)
         self.p_advanced.edit_config.connect(self.edit_config)
         self.p_advanced.restart_agent.connect(self.restart_agent)
-
-        self.buttons = QDialogButtonBox(
-            QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        self.buttons.button(QDialogButtonBox.Save).clicked.connect(self._save_and_home)
-        self.buttons.button(QDialogButtonBox.Cancel).clicked.connect(self._cancel)
-        self.buttons.button(QDialogButtonBox.Save).setProperty("accent", True)
-        bar = QHBoxLayout()
-        bar.setContentsMargins(12, 8, 12, 10)
-        bar.addStretch(1)
-        bar.addWidget(self.buttons)
-        outer.addLayout(bar)
-        return container
+        self.p_advanced.quit_app.connect(self.quit_app)
+        return body
 
     # ------------------------------------------------------------- nav
     def _show_dashboard(self) -> None:
         self.p_dictation.cancel_capture()
         self.stack.setCurrentIndex(0)
+        self._footer.hide()
         self._sync_sampler()
 
     def _show_settings(self, panel: int) -> None:
         self.stack.setCurrentIndex(1)
+        self._footer.show()
         self._navigate(panel)
         self.nav.set_index(panel)
         self._sync_sampler()
@@ -207,6 +216,7 @@ class SettingsWindow(QWidget):
     def showEvent(self, e) -> None:  # noqa: N802
         super().showEvent(e)
         self._load_all()
+        self._show_dashboard()          # always reopen on the dashboard
         self._sync_sampler()
 
     def hideEvent(self, e) -> None:  # noqa: N802

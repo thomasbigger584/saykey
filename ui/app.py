@@ -76,9 +76,11 @@ class App(QObject):
 
         self._build_tray()
 
-        if self.settings.autostart_server and self.settings.backend == "server":
+        # the server + agent always start with Saykey (the server only when a
+        # server model is configured -- a local model needs no Docker).
+        if self.settings.backend == "server":
             self._start_server_async()
-        if self.settings.autostart_agent and orch.agent_supported():
+        if orch.agent_supported():
             ok, msg = self.agent.start()
             if not ok:
                 self.status.add("error", f"Dictation agent: {msg}")
@@ -158,6 +160,7 @@ class App(QObject):
             self._settings_win.open_log.connect(self._open_log)
             self._settings_win.edit_config.connect(self._edit_config)
             self._settings_win.restart_agent.connect(self._restart_agent)
+            self._settings_win.quit_app.connect(self._quit_full)
         self._settings_win.show()
         self._settings_win.raise_()
         self._settings_win.activateWindow()
@@ -395,6 +398,15 @@ class App(QObject):
                 shortcut=self.settings.shortcut)
 
     # ------------------------------------------------------------- lifecycle
+    def _quit_full(self) -> None:
+        """The in-app Quit button: stop the ASR container too, then exit
+        (same effect as scripts/stop.ps1)."""
+        if self._settings_win is not None:
+            self._settings_win.hide()
+        threading.Thread(target=orch.stop_server_detached,
+                         args=(self.settings,), daemon=True).start()
+        self.quit()
+
     def quit(self) -> None:
         try:
             self.agent.set_suspended(False)

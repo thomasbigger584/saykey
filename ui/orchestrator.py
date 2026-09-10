@@ -12,6 +12,7 @@ Starts / stops the two moving parts:
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import shutil
@@ -50,8 +51,10 @@ def _has_nvidia_gpu() -> bool:
     return gpu_name() is not None
 
 
+@functools.lru_cache(maxsize=1)
 def gpu_name() -> str | None:
-    """Name of the first NVIDIA GPU, or None (no nvidia-smi / no GPU / macOS)."""
+    """Name of the first NVIDIA GPU, or None (no nvidia-smi / no GPU / macOS).
+    Cached -- the hardware doesn't change while the app runs."""
     if not shutil.which("nvidia-smi"):
         return None
     try:
@@ -126,6 +129,24 @@ def restart_server(settings: Settings) -> None:
     subprocess.run(_compose_cmd(settings, ["up", "-d", "--build", "--force-recreate"]),
                    cwd=str(SERVER_DIR), env=_compose_env(settings),
                    capture_output=True, creationflags=_NO_WINDOW)
+
+
+def stop_server_detached(settings: Settings) -> None:
+    """Fire `docker compose down` and return at once -- it finishes on its own
+    even after the app has exited. Used by the in-app Quit button."""
+    if not COMPOSE_FILE.exists():
+        return
+    kwargs: dict = dict(cwd=str(SERVER_DIR), env=_compose_env(settings),
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        stdin=subprocess.DEVNULL)
+    if sys.platform == "win32":
+        kwargs["creationflags"] = _NO_WINDOW | 0x00000008   # DETACHED_PROCESS
+    else:
+        kwargs["start_new_session"] = True
+    try:
+        subprocess.Popen(_compose_cmd(settings, ["down"]), **kwargs)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # ========================================================= dictation agent

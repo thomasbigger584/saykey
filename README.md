@@ -83,19 +83,20 @@ inverse and removes nothing.
 A cross-platform tray app (**PySide6** — one Python codebase for Windows / macOS
 / Linux) that is the single face of the app:
 
-- **One tray icon** (colour reflects state). On launch it starts the ASR server
-  (Docker) and, on Windows, the headless dictation agent (`agent/saykey.ahk`) —
-  the agent has no icon or notifications of its own.
+- **One tray icon** (colour reflects state). On launch it always starts the
+  headless dictation agent (`agent/saykey.ahk`) and — unless a local model is
+  configured — the ASR server (Docker). The agent has no icon of its own.
 - **Dashboard** — the default view: a big state‑coloured glowing mic (Ready /
   Recording / Transcribing / Error), the current instruction ("Hold **Ctrl+Space**
-  to talk"), and quick actions.
+  to talk"), and a **Settings** button.
 - **Settings** — a left navigation rail: **General** (language, startup, tray) ·
   **Dictation & Hotkeys** (hotkey recorder, hold-vs-toggle, microphone with a
-  live meter, floating‑button / toast toggles + positions, and a collapsible
-  *Tuning (VDI Safe Injection)* group for injection mode / key‑delay / chunking) ·
-  **ASR Engine & Models** (model cards badged GPU‑Docker vs Local‑CPU, the active
-  one marked *CURRENT*, plus detected‑hardware context) · **Advanced & Developer**
-  (debugging, autostart, and the recent‑activity log).
+  live meter, floating‑button / toast toggles + positions, and a
+  *Tuning (VDI Safe Injection)* grid: injection mode / key‑delay / chunk size &
+  delay) · **ASR Engine & Models** (model cards badged GPU‑Docker vs Local‑CPU,
+  with **✓ APPLIED** vs **SELECTED** states and detected‑hardware context) ·
+  **Advanced & Developer** (debug toggle, a chronological activity log, and a
+  **Quit Saykey** button that also stops the ASR container).
 - A **status bar** on every view: ASR Server and Dictation Agent state (the live
   mic meter lives on the Dictation panel).
 - **Save / Cancel**: `Save` writes every change to `config.ini` and returns to the
@@ -338,8 +339,8 @@ onnx-asr / faster-whisper models smaller and faster.
 | | `font_size` | `11` | button text size (pt) |
 | | `x` / `y` | — | explicit pixel position; written automatically when you drag it |
 | `ui` | `start_hidden` / `launch_on_startup` / `show_tray_icon` | | UI window behaviour |
-| | `autostart_server` / `autostart_agent` | `true` | start these when the UI launches |
-| | `developer_options` | `false` | reveal the tray's Developer submenu + the debug / autostart toggles in Settings → Advanced |
+| | `autostart_server` / `autostart_agent` | `true` | legacy — the app now always starts both (server skipped for a local model) |
+| | `developer_options` | `false` | reveal the tray's Developer submenu + the debug toggle in Settings → Advanced |
 
 ---
 
