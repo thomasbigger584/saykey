@@ -48,6 +48,8 @@ _MAP = {
     "toast_enabled":     ("toast", "enabled", "true"),
     "toast_position":    ("toast", "position", "bottom"),
 
+    "button_enabled":    ("button", "enabled", "false"),
+
     "start_hidden":      ("ui", "start_hidden", "false"),
     "launch_on_startup": ("ui", "launch_on_startup", "false"),
     "show_tray_icon":    ("ui", "show_tray_icon", "true"),
@@ -57,7 +59,7 @@ _MAP = {
 }
 
 _BOOLS = {
-    "debug", "toast_enabled", "start_hidden", "launch_on_startup",
+    "debug", "toast_enabled", "button_enabled", "start_hidden", "launch_on_startup",
     "show_tray_icon", "autostart_server", "autostart_agent", "developer_options",
 }
 _INTS = {"mic_device_index", "min_hold_ms", "max_seconds", "server_port"}
@@ -84,6 +86,7 @@ class Settings:
     debug: bool = False
     toast_enabled: bool = True
     toast_position: str = "bottom"
+    button_enabled: bool = False
     start_hidden: bool = False
     launch_on_startup: bool = False
     show_tray_icon: bool = True

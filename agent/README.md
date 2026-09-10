@@ -5,10 +5,20 @@ This is the only platform-specific part of the project.
 
 ## `saykey.ahk` (Windows, AutoHotkey v2)
 
+**Headless** — no tray icon, no notifications. The desktop UI (`ui/`) is the one
+face of the app; this process reports to it through `%TEMP%\saykey_ctl`:
+
+| file | direction | meaning |
+|---|---|---|
+| `activity` | agent → UI | one word: `idle` / `preparing` / `recording` / `transcribing` / `stopped` |
+| `events.tsv` | agent → UI | append-only `‹unix-seconds› TAB ‹level› TAB ‹message›` |
+| `ui.quit` / `ui.reload` / `ui.button` | UI → agent | exit / reload / re-read `[button] enabled` |
+| `ui.suspend` | UI → agent | pause every trigger (present = paused) while the UI captures a new shortcut |
+
 - Registers the dictation key from `[hotkey]` in the project-root `config.ini`
   (`^Space` = Ctrl+Space, push-to-talk by default).
 - Manages `recorder/record.py --serve` — the resident recorder — via signal
-  files in `%TEMP%\saykey_ctl`. Press → `start`; release → `stop`.
+  files in the same directory. Press → `start`; release → `stop`.
 - Shows the on-screen recording indicator (`[toast]`), then injects the returned
   text with `SendInput "{Raw}…"` (scan-codes, never the clipboard).
 - Fires the dictation key from **two** independent paths so it still triggers when
@@ -25,13 +35,11 @@ This is the only platform-specific part of the project.
   window: left-click-hold = talk, right-drag = move (position persisted to
   `config.ini`). All paths feed one idempotent `talkStart` / `talkStop` /
   `talkCancel` core, so whichever sees the input first does the work.
-- Tray menu: audio devices, floating-button toggle, log. With
-  `[ui] developer_options = true`: a **Developer Options** submenu (edit config,
-  engine check, restart recorder, debug logging, ASR Docker server).
 
-Normally the UI starts it (`..\scripts\run.ps1`). To run just the agent,
-double-click `saykey.ahk` or point AutoHotkey v2 at it. `--test-toast` shows the
-indicator states and exits.
+Normally the UI starts it (`..\scripts\run.ps1`) and controls it from its own
+tray menu. To run just the agent, double-click `saykey.ahk` or point AutoHotkey
+v2 at it (it works standalone; the status files simply go unread). `--test-toast`
+shows the indicator states and exits.
 
 ## macOS / Linux
 

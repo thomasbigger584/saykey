@@ -1,6 +1,7 @@
 #Requires AutoHotkey v2.0
 #SingleInstance Force
 #MaxThreadsPerHotkey 1
+#NoTrayIcon
 Persistent
 
 ; ===========================================================================
@@ -14,6 +15,12 @@ Persistent
 ;  the clipboard, so it works when host<->VDI clipboard sharing is disabled.
 ;  A resident recorder daemon (record.py --serve) keeps the microphone and the
 ;  transcription backend warm so a key press starts capture in ~100 ms.
+;
+;  This process is HEADLESS -- no tray icon, no notifications. It reports state
+;  to the desktop UI by writing:
+;    <ctl>\activity   one word: idle | preparing | recording | transcribing
+;    <ctl>\events.tsv append-only: <unix-seconds> TAB <level> TAB <message>
+;  and takes commands back from the UI via <ctl>\ui.quit / .reload / .button .
 ; ===========================================================================
 
 global APP := "Saykey"
@@ -72,10 +79,6 @@ C["button_font"]       := readCfg("button", "font_size", "11")
 C["button_x"]          := Integer(readCfg("button", "x", "-1"))
 C["button_y"]          := Integer(readCfg("button", "y", "-1"))
 
-; Developer Options: gates the internals submenu in the tray (config, engine
-; check, recorder restart, ASR Docker server). Toggled in the UI's Advanced tab.
-C["dev_options"]       := readCfg("ui", "developer_options", "false") = "true"
-
 global HK_MODE    := StrLower(readCfg("hotkey", "mode", "hold"))
 global HK_KEY     := readCfg("hotkey", "key", "^Space")
 global HK_CANCEL  := readCfg("hotkey", "cancel", "^+Space")
@@ -92,7 +95,6 @@ if !FileExist(RECORDER) {
     MsgBox("recorder\record.py not found under " ROOT, APP, "Iconx")
     ExitApp()
 }
-global SERVERPS1 := ROOT "\scripts\run-server.ps1"
 
 ; ---- resident recorder: signal files in a %TEMP% control directory ---------
 global CTLDIR        := A_Temp "\saykey_ctl"
@@ -107,7 +109,17 @@ global CTL_ERROR     := CTLDIR "\error"
 global CTL_CANCELLED := CTLDIR "\cancelled"
 global CTL_UP        := CTLDIR "\up"
 global T_LOG         := A_Temp "\saykey.log"
-global T_DEV         := A_Temp "\saykey_devices.txt"
+
+; ---- headless status channel + commands from the UI ----------------------
+global ST_ACTIVITY   := CTLDIR "\activity"          ; one word, overwritten
+global ST_EVENTS     := CTLDIR "\events.tsv"        ; append-only feed
+global UI_QUIT       := CTLDIR "\ui.quit"           ; UI -> exit the agent
+global UI_RELOAD     := CTLDIR "\ui.reload"         ; UI -> reload the script
+global UI_BUTTON     := CTLDIR "\ui.button"         ; UI -> re-read [button] enabled
+global UI_SUSPEND    := CTLDIR "\ui.suspend"        ; UI -> pause triggers (recording a shortcut)
+global gEmitCount    := 0
+global gActivity     := ""
+global gSuspended    := false
 
 global gState := "idle"      ; idle | starting | recording | transcribing
 global gPressTick := 0
@@ -132,6 +144,43 @@ dbg(msg) {
         try FileAppend("[ahk " FormatTime(, "HH:mm:ss") "] " msg "`n", T_LOG)
 }
 
+; ------------------------------------------------------- status -> the UI
+; The agent is headless; these two files are how the desktop UI learns what's
+; happening. `emit` also mirrors to the debug log.
+emit(level, msg) {
+    global ST_EVENTS, gEmitCount
+    msg := RegExReplace(msg, "[`t`r`n]+", " ")   ; keep the .tsv one line per event
+    ts := DateDiff(A_NowUTC, "19700101000000", "Seconds")
+    try FileAppend(ts "`t" level "`t" msg "`n", ST_EVENTS, "UTF-8-RAW")
+    if (++gEmitCount >= 200)
+        trimEvents()
+    dbg("[" level "] " msg)
+}
+trimEvents() {
+    global ST_EVENTS, gEmitCount
+    gEmitCount := 0
+    try {
+        lines := StrSplit(FileRead(ST_EVENTS, "UTF-8"), "`n")
+        if (lines.Length <= 130)
+            return
+        keep := ""
+        loop 100
+            keep .= lines[lines.Length - 101 + A_Index] "`n"
+        f := FileOpen(ST_EVENTS, "w", "UTF-8-RAW"), f.Write(keep), f.Close()
+    }
+}
+setActivity(word) {
+    global ST_ACTIVITY, gActivity
+    if (word = gActivity)
+        return
+    gActivity := word
+    try {
+        f := FileOpen(ST_ACTIVITY, "w", "UTF-8-RAW")
+        f.Write(word), f.Close()
+    }
+}
+
+try DirCreate(CTLDIR)                        ; status files land here from the first line
 toastInit()
 buttonInit()
 if (A_Args.Length && A_Args[1] = "--test-toast") {
@@ -142,7 +191,8 @@ if (A_Args.Length && A_Args[1] = "--test-toast") {
     ExitApp()
 }
 
-buildTray()
+for f in [ST_EVENTS, ST_ACTIVITY, UI_QUIT, UI_RELOAD, UI_BUTTON, UI_SUSPEND]
+    try FileDelete(f)
 if (HK_MODE = "toggle")
     registerHotkey(HK_KEY, onToggle, "key")
 else
@@ -150,10 +200,11 @@ else
 registerHotkey(HK_CANCEL, onCancel, "cancel")
 initRawInput()                               ; parallel trigger: raw HID input, not the hook chain
 OnExit(onExitCleanup)
-setIdleTip()
+SetTimer(uiSignalWatch, 400)
+setActivity("idle")
 startDaemon()
-TrayTip((HK_MODE = "hold" ? "Hold " HK_KEY " to talk" : "Press " HK_KEY " to dictate")
-    . " -- warming up...", APP, 0x1)
+emit("info", (HK_MODE = "hold" ? "Hold " HK_KEY " to talk" : "Press " HK_KEY " to dictate")
+    . " -- warming up the recorder...")
 
 ; --------------------------------------------------------------- registration
 registerHotkey(combo, handler, name) {
@@ -178,13 +229,15 @@ registerHotkey(combo, handler, name) {
 ; source fires first does the work and the other is a harmless no-op.
 talkStart() {
     global
+    if (gSuspended)                             ; UI is capturing a new shortcut
+        return
     prev := Critical("On")
     if (gState = "idle" && ensureDaemon()) {
         clearSignals()
         gPressTick := A_TickCount
         gState := "starting"
         gTalkActive := true
-        setTip("preparing...")
+        setActivity("preparing")
         toastShow("prep")                       ; on screen immediately
         buttonState("prep")
         FileAppend("1", CTL_START)
@@ -208,12 +261,12 @@ talkStop(checkMinHold := false) {
             held := A_TickCount - gPressTick
             if (checkMinHold && held < HK_MINHOLD) {
                 FileAppend("1", CTL_CANCEL)      ; accidental tap -> abort quietly
-                setTip("tap ignored")
+                setActivity("idle")
                 dbg("talk stop held=" held "ms < " HK_MINHOLD " -> cancel")
             } else {
                 FileAppend("1", CTL_STOP)
                 gState := "transcribing"
-                setTip("transcribing...")
+                setActivity("transcribing")
                 dbg("talk stop held=" held "ms -> transcribe")
             }
         }
@@ -227,7 +280,7 @@ talkCancel() {
     gTalkActive := false
     if (gState != "idle") {
         FileAppend("1", CTL_CANCEL)
-        setTip("cancelling...")
+        setActivity("idle")
         toastHide()
         dbg("talk cancel")
     }
@@ -399,8 +452,7 @@ ctlWatch() {
         gState := "recording"
         dbg("ready -> recording")
         if !FileExist(CTL_CANCEL) {
-            setTip(HK_MODE = "hold" ? "RECORDING -- release to insert"
-                                    : "RECORDING -- " HK_KEY " to stop")
+            setActivity("recording")
             toastShow("rec")                    ; now actually recording
             buttonState("rec")
             try SoundBeep(880, 80)
@@ -415,10 +467,10 @@ ctlWatch() {
         SetTimer(ctlWatch, 0)
         gState := "idle"
         gTalkActive := false
-        setIdleTip()
+        setActivity("idle")
         toastHide()
         buttonState("idle")
-        TrayTip("Recorder daemon stopped -- see log", APP, 0x3)
+        emit("error", "Recorder stopped unexpectedly -- open the log for details")
     }
 }
 
@@ -435,22 +487,20 @@ finishResult() {
     gState := "idle"
     gTalkActive := false
     gRawMainDown := false, gRawCancelDown := false   ; resync raw-input edge state
-    setIdleTip()
+    setActivity("idle")
 
     if hadError {
-        TrayTip("Transcription error -- opening log", APP, 0x3)
-        if FileExist(T_LOG)
-            try Run('notepad.exe "' T_LOG '"')
+        emit("error", "Transcription failed -- open the log for details")
         return
     }
     if wasCancel {
-        TrayTip("Cancelled", APP, 0x2)
+        emit("info", "Recording cancelled")
         return
     }
     text := Trim(text, " `t`r`n")
     dbg("result: " (text = "" ? "(empty)" : "'" text "'"))
     if (text = "") {
-        TrayTip("No speech detected", APP, 0x2)
+        emit("warn", "No speech detected")
         return
     }
     injectText(text)
@@ -493,7 +543,7 @@ startDaemon() {
     try {
         Run(args, ROOT, "Hide", &pid)
     } catch as e {
-        TrayTip("Could not start recorder daemon: " e.Message, APP, 0x3)
+        emit("error", "Could not start the recorder: " e.Message)
         return false
     }
     DAEMON_PID := pid
@@ -512,7 +562,7 @@ restartDaemon() {
     gState := "idle"
     gTalkActive := false
     startDaemon()
-    TrayTip("Recorder restarting...", APP, 0x1)
+    emit("info", "Restarting the recorder...")
 }
 
 warmWatch() {
@@ -522,25 +572,25 @@ warmWatch() {
     if FileExist(CTL_UP) {
         SetTimer(warmWatch, 0)
         waited := 0
-        setIdleTip()
-        TrayTip("Recorder ready -- "
-            . (HK_MODE = "hold" ? "hold " HK_KEY " to talk" : "press " HK_KEY " to dictate"),
-            APP, 0x1)
+        setActivity("idle")
+        emit("ok", "Ready -- "
+            . (HK_MODE = "hold" ? "hold " HK_KEY " to talk" : "press " HK_KEY " to dictate"))
         return
     }
     if (DAEMON_PID && !ProcessExist(DAEMON_PID)) {
         SetTimer(warmWatch, 0)
         waited := 0
-        TrayTip("Recorder daemon failed to start -- check the log", APP, 0x3)
+        emit("error", "The recorder failed to start -- open the log for details")
         return
     }
     if (waited = 8000)
-        TrayTip("Warming up the transcription backend...", APP, 0x1)
+        emit("info", "Still warming up the transcription backend...")
 }
 
 onExitCleanup(*) {
     global
     try FileAppend("1", CTL_QUIT)
+    setActivity("stopped")
     Sleep(200)
     if (DAEMON_PID && ProcessExist(DAEMON_PID))
         try ProcessClose(DAEMON_PID)
@@ -751,21 +801,6 @@ onBtnMouse(wParam, lParam, msg, hwnd) {
     return 0
 }
 
-toggleButton() {
-    global
-    C["button_enabled"] := !C["button_enabled"]
-    try IniWrite(C["button_enabled"] ? "true" : "false", ConfigFile, "button", "enabled")
-    if (C["button_enabled"]) {
-        if BtnGui
-            buttonState(gState = "recording" ? "rec" : "idle")
-        else
-            buttonInit()
-    } else if BtnGui {
-        try BtnGui.Hide()
-    }
-    buildTray()
-}
-
 ; ----------------------------------------------------------------- injection
 injectText(text) {
     global
@@ -805,8 +840,11 @@ injectText(text) {
             Sleep(C["chunk_delay"])
         }
     }
+    shown := Trim(text, " `t`r`n")
+    if (StrLen(shown) > 160)
+        shown := SubStr(shown, 1, 157) "..."
     dbg("injected " StrLen(RTrim(text)) " chars in mode=" mode)
-    TrayTip("Inserted " StrLen(RTrim(text)) " characters", APP, 0x1)
+    emit("ok", 'Typed: "' shown '"')
 }
 
 splitChunks(s, n) {
@@ -853,81 +891,50 @@ clearSignals() {
         try FileDelete(f)
 }
 
-setIdleTip() => setTip(HK_MODE = "hold" ? "hold " HK_KEY " to talk" : HK_KEY " to dictate")
-setTip(txt) => (A_IconTip := APP " -- " txt)
-
-buildTray() {
+; ------------------------------------------------------- commands from the UI
+; The desktop UI owns the single tray icon; it drives the agent by dropping
+; these flag files into the control directory (see uiSignalWatch's timer).
+uiSignalWatch() {
     global
-    try TraySetIcon("shell32.dll", 278)
-    A_TrayMenu.Delete()
-    label := APP "  [" HK_MODE " / " HK_KEY "]  "
-        . (C["backend"] = "server" ? "server:" C["engine"] : "local whisper")
-    A_TrayMenu.Add(label, (*) => "")
-    A_TrayMenu.Disable(label)
-    A_TrayMenu.Add()
-    A_TrayMenu.Add("List audio devices", (*) => showDevices())
-    A_TrayMenu.Add("Floating talk button", (*) => toggleButton())
-    if C["button_enabled"]
-        A_TrayMenu.Check("Floating talk button")
-    A_TrayMenu.Add("Open log", (*) => (FileExist(T_LOG) ? Run('notepad.exe "' T_LOG '"') : TrayTip("No log yet", APP, 0x1)))
-
-    ; ---- Developer Options: only shown when [ui] developer_options = true ----
-    if C["dev_options"] {
-        serverSub := Menu()
-        serverSub.Add("Start / update ASR server", (*) => serverAction("up"))
-        serverSub.Add("Server status", (*) => serverAction("status"))
-        serverSub.Add("Server logs", (*) => serverAction("logs"))
-        serverSub.Add("Stop ASR server", (*) => serverAction("down"))
-
-        devSub := Menu()
-        devSub.Add("Edit config.ini", (*) => Run('notepad.exe "' ConfigFile '"'))
-        devSub.Add("Check transcription engine", (*) => warmupEngine())
-        devSub.Add("Restart recorder", (*) => restartDaemon())
-        devSub.Add("Debug logging", (*) => toggleDebug())
-        if DEBUG
-            devSub.Check("Debug logging")
-        devSub.Add("ASR Docker server", serverSub)
-
-        A_TrayMenu.Add()
-        A_TrayMenu.Add("Developer Options", devSub)
+    if FileExist(UI_QUIT) {
+        try FileDelete(UI_QUIT)
+        ExitApp()                               ; runs onExitCleanup
+    }
+    if FileExist(UI_RELOAD) {
+        try FileDelete(UI_RELOAD)
+        Reload()
+    }
+    if FileExist(UI_BUTTON) {
+        try FileDelete(UI_BUTTON)
+        refreshButton()
     }
 
-    A_TrayMenu.Add()
-    A_TrayMenu.Add("Reload", (*) => Reload())
-    A_TrayMenu.Add("Exit", (*) => ExitApp())
-}
-
-toggleDebug() {
-    global
-    IniWrite(DEBUG ? "false" : "true", ConfigFile, "general", "debug")
-    TrayTip("Debug logging " (DEBUG ? "OFF" : "ON") " -- reloading", APP, 0x1)
-    Reload()
-}
-
-showDevices() {
-    global
-    RunWait('"' PY '" "' RECORDER '" --list-devices --output="' T_DEV '"', ROOT, "Hide")
-    if FileExist(T_DEV)
-        Run('notepad.exe "' T_DEV '"')
-}
-
-warmupEngine() {
-    global
-    TrayTip("Checking transcription backend...", APP, 0x1)
-    try FileDelete(T_DEV)
-    RunWait('"' PY '" "' RECORDER '" --config="' ConfigFile '" --warmup --log-file="' T_DEV '"', ROOT, "Hide")
-    if FileExist(T_DEV)
-        Run('notepad.exe "' T_DEV '"')
-    else
-        TrayTip("Warmup produced no output -- see " T_LOG, APP, 0x2)
-}
-
-serverAction(act) {
-    global
-    if !FileExist(SERVERPS1) {
-        TrayTip("run-server.ps1 not found", APP, 0x3)
-        return
+    ; While the UI captures a new shortcut, pause every trigger so the keys land
+    ; in the UI's field instead of starting a recording. Self-heals if the file
+    ; is left behind (UI crashed): drop it after 45 s.
+    susp := FileExist(UI_SUSPEND) ? true : false
+    if (susp && DateDiff(A_Now, FileGetTime(UI_SUSPEND, "M"), "Seconds") > 45) {
+        try FileDelete(UI_SUSPEND)
+        susp := false
     }
-    hide := (act = "up" || act = "status" || act = "logs") ? "" : "Hide"
-    Run('powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' SERVERPS1 '" ' act, ROOT, hide)
+    if (susp != gSuspended) {
+        gSuspended := susp
+        emit("info", susp ? "Dictation paused -- recording a shortcut" : "Dictation resumed")
+    }
+}
+
+; Re-read [button] enabled from config and show / hide the floating button
+; live (no reload -- the recorder stays warm).
+refreshButton() {
+    global
+    C["button_enabled"] := readCfg("button", "enabled", "false") = "true"
+    if (C["button_enabled"]) {
+        if BtnGui
+            buttonState(gState = "recording" ? "rec" : "idle")
+        else
+            buttonInit()
+    } else if BtnGui {
+        try BtnGui.Hide()
+    }
+    emit("info", "Floating talk button " (C["button_enabled"] ? "on" : "off"))
 }

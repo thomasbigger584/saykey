@@ -8,9 +8,12 @@ of the app re-opens Settings instead of starting a new instance.
 
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 
 from PySide6.QtCore import QObject, QTimer
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
@@ -20,9 +23,34 @@ from . import autostart
 from . import orchestrator as orch
 from .config_store import load, save
 from .icon import make_icon
+from .status import StatusFeed
 from .widgets.settings_window import SettingsWindow
 
 _IPC_NAME = "saykey-ui-singleton"
+
+# activity word (from the agent) -> (icon state, human label)
+_ACTIVITY = {
+    "recording":    ("recording", "Recording…"),
+    "preparing":    ("busy", "Starting…"),
+    "transcribing": ("busy", "Transcribing…"),
+    "idle":         ("idle", "Idle"),
+    "stopped":      ("offline", "Agent stopped"),
+}
+
+
+def _open_path(path: Path) -> None:
+    """Open a file with the OS default handler (used for the log / config.ini)."""
+    try:
+        if not path.exists():
+            path.write_text("", encoding="utf-8")
+        if sys.platform == "win32":
+            os.startfile(str(path))  # noqa: S606
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(path)])
+        else:
+            subprocess.Popen(["xdg-open", str(path)])
+    except Exception:  # noqa: BLE001
+        pass
 
 
 class App(QObject):
@@ -34,26 +62,37 @@ class App(QObject):
 
         self.settings = load()
         self.agent = orch.Agent()
+        self.status = StatusFeed()
         self._settings_win: SettingsWindow | None = None
+        # cached results of the slow network / docker probes (updated off-thread)
+        self._server_online = False
+        self._docker_ok = False
+        self._probing = False
 
         autostart.sync(self.settings.launch_on_startup)
 
         self._build_tray()
 
-        if self.settings.autostart_server:
+        if self.settings.autostart_server and self.settings.backend == "server":
             self._start_server_async()
         if self.settings.autostart_agent and orch.agent_supported():
             ok, msg = self.agent.start()
             if not ok:
-                self._notify("Dictation agent", msg, warning=True)
+                self.status.add("error", f"Dictation agent: {msg}")
 
         if not self.settings.start_hidden or not self.settings.show_tray_icon:
             self.open_settings()
 
-        # periodic status refresh
+        # fast, cheap tick: agent activity + the event feed (file reads only)
         self._poll = QTimer()
         self._poll.timeout.connect(self._refresh_status)
-        self._poll.start(5000)
+        self._poll.start(1000)
+        # slow tick: kick a background probe of the ASR server / Docker
+        self._probe_timer = QTimer()
+        self._probe_timer.timeout.connect(self._kick_probe)
+        self._probe_timer.start(3000)
+        self._kick_probe()
+        self._refresh_status()
 
     # ------------------------------------------------------------- tray
     def _build_tray(self) -> None:
@@ -65,7 +104,7 @@ class App(QObject):
         self.act_status.setEnabled(False)
         menu.addSeparator()
 
-        menu.addAction("Settings…", self.open_settings)
+        menu.addAction("Open Saykey…", self.open_settings)
         menu.addSeparator()
 
         self.act_server = menu.addAction("ASR server", self._toggle_server)
@@ -73,14 +112,24 @@ class App(QObject):
         self.act_agent = menu.addAction("Dictation agent", self._toggle_agent)
         self.act_agent.setCheckable(True)
         self.act_agent.setEnabled(orch.agent_supported())
+        self.act_button = menu.addAction("Floating talk button", self._toggle_button)
+        self.act_button.setCheckable(True)
+        self.act_button.setChecked(self.settings.button_enabled)
         menu.addSeparator()
 
         self.act_startup = menu.addAction("Launch on startup", self._toggle_startup)
         self.act_startup.setCheckable(True)
         self.act_startup.setChecked(autostart.is_enabled())
+
+        # developer-only shortcuts
+        self._dev_menu = menu.addMenu("Developer")
+        self._dev_menu.addAction("Open log file", self._open_log)
+        self._dev_menu.addAction("Edit config.ini", self._edit_config)
+        self._dev_menu.addAction("Restart dictation agent", self._restart_agent)
+        self._dev_menu.menuAction().setVisible(self.settings.developer_options)
         menu.addSeparator()
 
-        menu.addAction("Quit", self.quit)
+        menu.addAction("Quit Saykey", self.quit)
 
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(self._tray_activated)
@@ -92,36 +141,55 @@ class App(QObject):
             self.open_settings()
 
     def _notify(self, title: str, msg: str, warning: bool = False) -> None:
-        icon = QSystemTrayIcon.Warning if warning else QSystemTrayIcon.Information
-        if self.settings.show_tray_icon:
-            self.tray.showMessage(title, msg, icon, 4000)
-        elif warning:
-            QMessageBox.warning(None, title, msg)
+        """No more system notifications -- everything goes to the in-app feed."""
+        self.status.add("warn" if warning else "info",
+                        f"{title}: {msg}" if title else msg)
+        self._refresh_status()
 
     # ------------------------------------------------------------- settings window
     def open_settings(self) -> None:
         if self._settings_win is None:
             self._settings_win = SettingsWindow()
             self._settings_win.applied.connect(self._on_settings_applied)
+            self._settings_win.recording_hotkey.connect(self._suspend_agent)
         self._settings_win.show()
         self._settings_win.raise_()
         self._settings_win.activateWindow()
+        self._refresh_status()
 
     def _on_settings_applied(self, new_settings, changed: dict) -> None:
         self.settings = new_settings
         self.tray.setVisible(new_settings.show_tray_icon)
+        self.act_button.setChecked(new_settings.button_enabled)
+        self._dev_menu.menuAction().setVisible(new_settings.developer_options)
+
+        # a live re-read on the agent, no restart needed
+        if "button_enabled" in changed and self.agent.running():
+            self.agent.signal_button()
 
         if any(k in changed for k in ("shortcut", "shortcut_mode", "mic_device_index",
-                                      "debug", "toast_enabled", "toast_position",
-                                      "developer_options")):
+                                      "debug", "toast_enabled", "toast_position")):
             if self.agent.running():
                 self.agent.restart()
-                self._notify("Dictation agent", "Restarted with new settings.")
+                self.status.add("info", "Dictation agent restarted with new settings")
 
-        if any(k in changed for k in ("engine", "model_override", "backend",
-                                      "device", "quantization")):
-            if changed.get("backend", (None, None))[1] == "server" or self.settings.backend == "server":
+        if changed.get("backend", (None, None))[1] == "local":
+            # a local model needs no container -- shut it down
+            self.status.add("info", "ASR server: stopping (the local model needs no Docker)")
+            self._server_online = False
+            threading.Thread(target=orch.stop_server, args=(self.settings,),
+                             daemon=True).start()
+        elif any(k in changed for k in ("engine", "model_override", "backend",
+                                        "device", "quantization")):
+            if (changed.get("backend", (None, None))[1] == "server"
+                    or self.settings.backend == "server"):
                 self._prompt_server_restart(changed)
+
+        # the recorder daemon resolves the backend at start-up, so a server<->local
+        # switch needs it restarted to actually take effect
+        if "backend" in changed and self.agent.running():
+            self.agent.restart()
+            self.status.add("info", "Dictation agent restarted for the new backend")
 
         self._refresh_status()
 
@@ -131,34 +199,16 @@ class App(QObject):
             "The model changed. Rebuild and restart the ASR server now?\n"
             "(first build of a new model can take several minutes)",
         ) == QMessageBox.Yes:
-            self._notify("ASR server", "Restarting with the new model…")
-            threading.Thread(target=orch.restart_server, args=(self.settings,),
+            self.status.add("info", "ASR server: restarting with the new model…")
+            threading.Thread(target=self._server_task, args=("restart",),
                              daemon=True).start()
 
-    # ------------------------------------------------------------- server / agent
-    def _start_server_async(self) -> None:
-        if not orch.docker_available():
-            self._notify("ASR server",
-                         "Docker isn't running — using the local Whisper fallback.",
-                         warning=True)
-            return
-        self._notify("ASR server", "Starting… (first run downloads the model)")
-        threading.Thread(target=self._server_up_and_wait, daemon=True).start()
-
-    def _server_up_and_wait(self) -> None:
-        proc = orch.start_server(self.settings)
-        if proc:
-            proc.wait()
-        for _ in range(120):
-            if orch.server_running(self.settings):
-                self._notify("ASR server", "Ready.")
-                return
-            time.sleep(2)
-
+    # ------------------------------------------------------------- tray actions
     def _toggle_server(self, checked: bool) -> None:
         if checked:
             self._start_server_async()
         else:
+            self.status.add("info", "ASR server: stopping")
             threading.Thread(target=orch.stop_server, args=(self.settings,),
                              daemon=True).start()
 
@@ -166,10 +216,37 @@ class App(QObject):
         if checked:
             ok, msg = self.agent.start()
             if not ok:
-                self._notify("Dictation agent", msg, warning=True)
+                self.status.add("error", f"Dictation agent: {msg}")
                 self.act_agent.setChecked(False)
         else:
+            self.status.add("info", "Dictation agent stopped")
             self.agent.stop()
+
+    def _toggle_button(self, checked: bool) -> None:
+        s = load()
+        s.button_enabled = checked
+        save(s)
+        self.settings = s
+        if self.agent.running():
+            self.agent.signal_button()
+        self.status.add("info", f"Floating talk button {'on' if checked else 'off'}")
+
+    def _restart_agent(self) -> None:
+        if orch.agent_supported():
+            self.agent.restart()
+            self.status.add("info", "Dictation agent restarted")
+
+    def _suspend_agent(self, on: bool) -> None:
+        """Pause / resume every trigger while the shortcut field is capturing."""
+        self.agent.set_suspended(on)
+
+    def _open_log(self) -> None:
+        from .paths import LOG_FILE
+        _open_path(LOG_FILE)
+
+    def _edit_config(self) -> None:
+        from .paths import CONFIG_FILE
+        _open_path(CONFIG_FILE)
 
     def _toggle_startup(self, checked: bool) -> None:
         autostart.set_enabled(checked)
@@ -178,30 +255,98 @@ class App(QObject):
         save(s)
         self.settings = s
 
+    # ------------------------------------------------------------- server
+    def _start_server_async(self) -> None:
+        if not orch.docker_available():
+            self.status.add("warn",
+                            "Docker isn't running — using the local Whisper fallback")
+            return
+        self.status.add("info", "ASR server: starting… (first run downloads the model)")
+        threading.Thread(target=self._server_task, args=("start",), daemon=True).start()
+
+    def _server_task(self, kind: str) -> None:
+        """Run start/restart, then wait for /health and report when it's up."""
+        if kind == "restart":
+            orch.restart_server(self.settings)
+        else:
+            proc = orch.start_server(self.settings)
+            if proc:
+                proc.wait()
+        for _ in range(150):                      # up to ~5 min for a first build
+            if orch.server_running(self.settings):
+                self._server_online = True
+                self.status.add("ok", "ASR server: online")
+                return
+            time.sleep(2)
+        self.status.add("warn", "ASR server: still loading — check the log if it "
+                                "doesn't come online")
+
     # ------------------------------------------------------------- status
+    def _kick_probe(self) -> None:
+        """Run the blocking server / Docker checks on a worker thread."""
+        if self._probing:
+            return
+        self._probing = True
+
+        def work():
+            try:
+                if self.settings.backend != "server":
+                    self._server_online = self._docker_ok = False
+                    return
+                self._server_online = orch.server_running(self.settings)
+                self._docker_ok = self._server_online or orch.docker_available()
+            finally:
+                self._probing = False
+
+        threading.Thread(target=work, daemon=True).start()
+
     def _refresh_status(self) -> None:
-        server = orch.server_running(self.settings)
+        self.status.refresh()
+        uses_server = self.settings.backend == "server"
+        server = self._server_online
         agent = self.agent.running()
         self.act_server.setChecked(server)
         self.act_agent.setChecked(agent)
 
-        if server:
-            state, txt = "idle", "ASR server: online"
-        elif orch.docker_available():
-            state, txt = "busy", "ASR server: starting / offline"
+        if not uses_server:
+            server_txt = "not used (local model)"
+        elif server:
+            server_txt = "online"
+        elif self._docker_ok:
+            server_txt = "starting…"
         else:
-            state, txt = "offline", "ASR server: offline (local fallback)"
-        if agent:
-            txt += "  ·  agent: running"
-        elif orch.agent_supported():
-            txt += "  ·  agent: stopped"
-        self.act_status.setText(txt)
+            server_txt = "offline (local fallback)"
+        agent_txt = "running" if agent else ("stopped" if orch.agent_supported()
+                                             else "n/a on this OS")
+
+        activity = self.status.activity if agent else "stopped"
+        act_state, act_label = _ACTIVITY.get(activity, ("idle", ""))
+
+        if act_state == "recording":
+            state = "recording"
+        elif act_state == "busy":
+            state = "busy"
+        elif not uses_server or server:
+            state = "idle"
+        elif self._docker_ok:
+            state = "busy"
+        else:
+            state = "offline"
+
+        # only surface the activity word when something is actually happening
+        prefix = f"{act_label}   ·   " if act_state in ("recording", "busy") else ""
+        line = f"{prefix}server {server_txt}   ·   agent {agent_txt}"
+        self.act_status.setText(line)
         self.tray.setIcon(make_icon(state))
-        self.tray.setToolTip(f"Saykey — {txt}")
+        self.tray.setToolTip(f"Saykey — {line}")
+
+        if self._settings_win is not None and self._settings_win.isVisible():
+            self._settings_win.update_status(server_txt, agent_txt, self.status.events())
 
     # ------------------------------------------------------------- lifecycle
     def quit(self) -> None:
         try:
+            self.agent.set_suspended(False)
             self.agent.stop()
         finally:
             self.qt.quit()

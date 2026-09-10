@@ -25,6 +25,7 @@ from .paths import (
     AHK_SCRIPT,
     COMPOSE_FILE,
     COMPOSE_GPU_FILE,
+    CTL_DIR,
     MODELS_DIR,
     PROJECT_ROOT,
     SERVER_DIR,
@@ -157,14 +158,43 @@ class Agent:
         return True, "started"
 
     def stop(self) -> None:
+        _signal("ui.quit")                       # let the agent exit cleanly
         if self.running():
-            self._proc.terminate()
             try:
-                self._proc.wait(timeout=4)
+                self._proc.wait(timeout=2)
             except subprocess.TimeoutExpired:
-                self._proc.kill()
+                self._proc.terminate()
+                try:
+                    self._proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    self._proc.kill()
         self._proc = None
 
     def restart(self) -> tuple[bool, str]:
         self.stop()
         return self.start()
+
+    def signal_button(self) -> None:
+        """Tell a running agent to re-read [button] enabled (no restart)."""
+        _signal("ui.button")
+
+    def signal_reload(self) -> None:
+        _signal("ui.reload")
+
+    def set_suspended(self, on: bool) -> None:
+        """Pause / resume all triggers -- used while the UI captures a shortcut."""
+        if on:
+            _signal("ui.suspend")
+        else:
+            try:
+                (CTL_DIR / "ui.suspend").unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _signal(name: str) -> None:
+    try:
+        CTL_DIR.mkdir(parents=True, exist_ok=True)
+        (CTL_DIR / name).write_text("1", encoding="utf-8")
+    except OSError:
+        pass

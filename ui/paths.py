@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 # ui/ lives directly under the project root.
@@ -16,6 +18,17 @@ SERVER_DIR = PROJECT_ROOT / "server"
 COMPOSE_FILE = SERVER_DIR / "docker-compose.yml"
 COMPOSE_GPU_FILE = SERVER_DIR / "docker-compose.gpu.yml"
 MODELS_DIR = PROJECT_ROOT / "models"
+LOG_FILE = Path(os.environ.get("TEMP", tempfile.gettempdir())) / "saykey.log"
+
+# The headless agent (agent/saykey.ahk) and this UI rendezvous here. It matches
+# the AHK script's  CTLDIR := A_Temp "\saykey_ctl".
+CTL_DIR = Path(os.environ.get("TEMP", tempfile.gettempdir())) / "saykey_ctl"
+ST_ACTIVITY = CTL_DIR / "activity"      # agent -> UI: one word
+ST_EVENTS = CTL_DIR / "events.tsv"      # agent -> UI: append-only feed
+UI_QUIT = CTL_DIR / "ui.quit"           # UI -> agent: exit
+UI_RELOAD = CTL_DIR / "ui.reload"       # UI -> agent: reload the script
+UI_BUTTON = CTL_DIR / "ui.button"       # UI -> agent: re-read [button] enabled
+UI_SUSPEND = CTL_DIR / "ui.suspend"     # UI -> agent: pause triggers (capturing a shortcut)
 
 
 def venv_python(windowless: bool = False) -> str:

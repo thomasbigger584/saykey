@@ -81,19 +81,24 @@ inverse and removes nothing.
 ## Desktop UI
 
 A cross-platform tray app (**PySide6** — one Python codebase for Windows / macOS
-/ Linux) that manages everything from a settings window:
+/ Linux) that is the single face of the app:
 
-- Tray icon (colour reflects server / agent status), **start hidden**, **launch
-  on OS startup**, single-instance (relaunch reopens Settings).
-- On launch it starts the ASR server (Docker) and, on Windows, the dictation
-  agent (`agent/saykey.ahk`).
-- **Settings → General:** transcribe shortcut, hold-vs-toggle, microphone.
-  **Advanced:** start hidden / launch on startup / show tray icon, and a
-  **Developer options** toggle (debugging, autostart of server & agent, and the
-  agent's Developer Options tray submenu).
-  **Models:** pick from the catalogue (Parakeet EN 0.6B default) — applying it
-  rebuilds + restarts the server.
-- Everything is written to the same `config.ini`, so the CLI tools stay in sync.
+- **One tray icon** (colour reflects state). On launch it starts the ASR server
+  (Docker) and, on Windows, the headless dictation agent (`agent/saykey.ahk`) —
+  the agent has no icon or notifications of its own.
+- **Status panel** at the top of the window: current activity (idle / recording /
+  transcribing), server and agent state, and a live feed of updates — everything
+  that used to be a system-tray balloon now lands here instead.
+- **Settings → General:** transcribe shortcut (**Change…** → press the combo —
+  the agent pauses so the keys land in the field; **Reset** → back to Ctrl+Space),
+  hold-vs-toggle, microphone, floating talk button.
+  **Advanced:** start hidden / launch on startup / show
+  tray icon, and a **Developer options** toggle (debugging, autostart of server
+  & agent, and the tray's Developer submenu). **Models:** pick from the
+  catalogue (Parakeet EN 0.6B default) — applying it rebuilds + restarts the
+  server.
+- **start hidden**, **launch on OS startup**, single-instance (relaunch reopens
+  the window). Everything is written to the same `config.ini`.
 
 > The dictation agent (global hotkey + keystroke injection) is Windows-only for
 > now via AutoHotkey. A native macOS/Linux agent (pynput-based) is the planned
@@ -241,11 +246,11 @@ cancels. The indicator (`[toast]`) never takes keyboard focus.
 **Toggle** (`[hotkey] mode = toggle`): press to start, press again (or pause
 ~2 s) to stop.
 
-Agent tray menu: list audio devices, toggle the floating talk button, open the
-log. With `[ui] developer_options = true` (Settings → Advanced → **Developer
-options**) it also shows a **Developer Options** submenu: edit config, check the
-transcription engine, restart the recorder, debug-logging toggle, and the **ASR
-Docker server** controls.
+The agent is headless — control it from the **UI's tray menu**: open the window,
+toggle the ASR server / dictation agent / floating talk button, launch on
+startup, quit. With `[ui] developer_options = true` (Settings → Advanced →
+**Developer options**) the tray also gains a **Developer** submenu: open the log,
+edit `config.ini`, restart the dictation agent.
 
 ---
 
@@ -329,7 +334,7 @@ onnx-asr / faster-whisper models smaller and faster.
 | | `x` / `y` | — | explicit pixel position; written automatically when you drag it |
 | `ui` | `start_hidden` / `launch_on_startup` / `show_tray_icon` | | UI window behaviour |
 | | `autostart_server` / `autostart_agent` | `true` | start these when the UI launches |
-| | `developer_options` | `false` | show the Developer Options submenu (agent tray) + its toggles (Settings → Advanced) |
+| | `developer_options` | `false` | reveal the tray's Developer submenu + the debug / autostart toggles in Settings → Advanced |
 
 ---
 

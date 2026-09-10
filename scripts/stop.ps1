@@ -40,10 +40,12 @@ $venvScripts = Join-Path $root '.venv\Scripts'
 $rootRe = [regex]::Escape($root)
 $stopped = 0
 
-# 1. ask the resident recorder to quit cleanly (releases the microphone)
+# 1. ask the agent + recorder to quit cleanly (deregisters the hotkey, frees the mic)
 if (Test-Path $ctl) {
-    try { Set-Content -LiteralPath (Join-Path $ctl 'quit') -Value '1' -ErrorAction Stop } catch {}
-    Start-Sleep -Milliseconds 400
+    foreach ($f in 'ui.quit', 'quit') {
+        try { Set-Content -LiteralPath (Join-Path $ctl $f) -Value '1' -ErrorAction Stop } catch {}
+    }
+    Start-Sleep -Milliseconds 600
 }
 
 $procs = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue
