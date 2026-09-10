@@ -71,6 +71,7 @@ class SettingsWindow(QWidget):
         self.setWindowTitle("Saykey")
         self._settings = load()
         self._event_sig: tuple = ()
+        self._model_dirty = False   # True once the user actually changes the model pick
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self._general_tab(), "General")
@@ -285,6 +286,10 @@ class SettingsWindow(QWidget):
             if self.model_list.item(row).data(Qt.UserRole) == target_id:
                 self.model_list.setCurrentRow(row)
                 break
+        # currentItemChanged fired during setCurrentRow above -- that's not a
+        # user edit, so clear the flag. _collect() only writes the model keys
+        # (and _on_settings_applied only restarts the server) if this is True.
+        self._model_dirty = False
 
     def _collect(self) -> Settings:
         s = load()   # start from disk so we don't clobber keys we don't manage
@@ -302,9 +307,12 @@ class SettingsWindow(QWidget):
         s.autostart_agent = self.cb_autostart_agent.isChecked()
         s.developer_options = self.cb_dev_options.isChecked()
 
-        item = self.model_list.currentItem()
-        if item:
-            m = models_catalog.by_id(item.data(Qt.UserRole))
+        # Only touch the model keys when the user actually changed the pick --
+        # otherwise a config that doesn't map cleanly onto the catalogue would
+        # look "changed" on every Apply and needlessly restart the ASR server.
+        if self._model_dirty:
+            item = self.model_list.currentItem()
+            m = models_catalog.by_id(item.data(Qt.UserRole)) if item else None
             if m:
                 s.backend = m.backend
                 s.engine = m.engine
@@ -355,6 +363,7 @@ class SettingsWindow(QWidget):
         self.mic_combo.setCurrentIndex(i if i >= 0 else 0)
 
     def _model_selected(self, item: QListWidgetItem, _prev) -> None:
+        self._model_dirty = True
         if not item:
             return
         m = models_catalog.by_id(item.data(Qt.UserRole))
@@ -377,6 +386,7 @@ class SettingsWindow(QWidget):
             QMessageBox.warning(self, "Autostart",
                                 f"Could not update OS autostart:\n{exc}")
         self._settings = load()
+        self._model_dirty = False   # what's on disk is now the baseline
         self.applied.emit(self._settings, changed)
 
     def _save_and_close(self) -> None:
