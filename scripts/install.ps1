@@ -1,17 +1,20 @@
 #Requires -Version 5.1
 <#
-    install.ps1 -- one-shot setup for Saykey (client side).
+    install.ps1 -- one-shot, standalone setup for Saykey (client side).
+
+    Creates every dependency on the machine and then STOPS. It starts nothing --
+    run.ps1 does that.
 
     - checks for / installs AutoHotkey v2 and Python (via winget, with consent)
-    - creates .venv and installs requirements.txt  (capture + local fallback)
+    - creates .venv and installs the recorder + desktop-UI dependencies
     - downloads the faster-whisper fallback model
     - writes config.ini
-    - optionally builds + starts the Docker ASR server (Parakeet)
+    - builds the Docker ASR server image (Parakeet) -- but does not start it
 
     Usage:
       powershell -ExecutionPolicy Bypass -File .\install.ps1
-      .\install.ps1 -Engine parakeet -Backend server -StartServer
-      .\install.ps1 -Backend local -WhisperModel small.en
+      .\install.ps1 -Engine parakeet-v3     # multilingual Parakeet
+      .\install.ps1 -Backend local          # Whisper-only, no Docker image
       .\install.ps1 -Yes -SkipModel
 #>
 [CmdletBinding()]
@@ -19,8 +22,6 @@ param(
     [ValidateSet("server", "local")] [string]$Backend = "server",
     [string]$Engine = "parakeet",
     [string]$WhisperModel = "base.en",
-    [switch]$StartServer,
-    [switch]$WithUI,
     [switch]$SkipModel,
     [switch]$Yes
 )
@@ -115,12 +116,10 @@ Info "Installing Python dependencies ..."
 if ($LASTEXITCODE -ne 0) { Die "pip install failed." }
 Ok "dependencies installed"
 
-if ($WithUI -or (-not $Yes -and (Ask "Install the desktop UI (tray app + settings)?"))) {
-    Info "Installing desktop UI dependencies (PySide6) ..."
-    & $venvPy -m pip install -r (Join-Path $root "ui\requirements.txt")
-    if ($LASTEXITCODE -eq 0) { Ok "UI installed -- launch it with:  scripts\run-ui.ps1" }
-    else { Warn "UI dependency install failed; run 'pip install -r ui\requirements.txt' later." }
-}
+Info "Installing desktop UI dependencies (PySide6) ..."
+& $venvPy -m pip install -r (Join-Path $root "ui\requirements.txt")
+if ($LASTEXITCODE -eq 0) { Ok "desktop UI installed" }
+else { Warn "UI dependency install failed; re-run, or 'pip install -r ui\requirements.txt' into .venv." }
 
 # --- config.ini ----------------------------------------------------
 Info "Writing config.ini ..."
@@ -151,9 +150,9 @@ else {
 Info "Audio input devices:"
 & $venvPy (Join-Path $root "recorder\record.py") --list-devices
 
-# --- Docker ASR server -----------------------------------------
+# --- Docker ASR server: BUILD the image, never start it -------------
 if ($Backend -eq "server") {
-    Info "Checking Docker (for the Parakeet ASR server) ..."
+    Info "Checking Docker (for the Parakeet ASR server image) ..."
     $dockerOk = $false
     if (Get-Command docker -ErrorAction SilentlyContinue) {
         $eap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
@@ -161,43 +160,43 @@ if ($Backend -eq "server") {
         $ErrorActionPreference = $eap
     }
     if ($dockerOk) {
-        Ok "Docker is running."
-        if ($StartServer -or (Ask "Build and start the ASR server now? (first build pulls several GB)")) {
-            & (Join-Path $scriptDir "run-server.ps1") up
-        }
-        else {
-            Info "Start it later with:   scripts\run-server.ps1 up"
-        }
+        Info "Building the ASR server image (first build pulls several GB) ..."
+        & (Join-Path $scriptDir "run-server.ps1") build
+        Set-Location $root
+        if ($LASTEXITCODE -eq 0) { Ok "ASR server image built -- run.ps1 will start the container" }
+        else { Warn "Image build failed; it will build on first run instead." }
     }
     else {
-        Warn "Docker not available. The client will use the local Whisper fallback until you run:"
-        Warn "  (start Docker Desktop)  then   scripts\run-server.ps1 up"
+        Warn "Docker not available -- skipping the image build."
+        Warn "Install / start Docker Desktop; the image then builds on first run."
+        Warn "Until then the client uses the local Whisper fallback."
     }
 }
 
 Write-Host ""
-Ok "Setup complete."
-$howToRun = if ($ahk) { "`"$ahk`" `"$root\agent\saykey.ahk`"" } else { "(install AutoHotkey v2 first)" }
+Ok "Setup complete -- nothing is running yet."
 Write-Host @"
 
-  Start dictation
-  ---------------
-    * desktop UI:   scripts\run-ui.ps1
-    * agent only:   powershell -ExecutionPolicy Bypass -File "$root\scripts\run-agent.ps1"
-    * or:  $howToRun
+  Start Saykey
+  ------------
+    scripts\run.ps1
+
+  Launches the tray app, which starts the ASR server (Docker) and the
+  dictation agent. Right-click the tray icon for Settings.
 
   Swap the transcription model
   ----------------------------
-    edit config.ini -> [server] engine   (parakeet | parakeet-v3 | canary |
-                                          whisper | onnx:<id> | fw:<id> | hf:<id>)
-    then:  scripts\run-server.ps1 restart   (or the UI's Models tab)
+    Settings -> Models,  or  edit config.ini -> [server] engine
+      (parakeet | parakeet-v3 | canary | whisper | onnx:<id> | fw:<id> | hf:<id>)
+    then:  scripts\run-server.ps1 restart
 
   Use it
   ------
     1. Click into your VDI / remote window.
-    2. Hold Ctrl+Space, speak, release. Text is typed in -- no clipboard.
+    2. Hold Ctrl+Space (or use the floating talk button), speak, release.
 
-  If the VDI drops/repeats characters: config.ini -> [injection] mode = Event
+  If the VDI drops/repeats characters or capitalises everything:
+    config.ini -> [injection] mode = Text
 "@ -ForegroundColor Gray
 
-if (-not $ahk) { Warn "AutoHotkey v2 is still required to run the hotkey script." }
+if (-not $ahk) { Warn "AutoHotkey v2 is still required -- install it, then run.ps1" }

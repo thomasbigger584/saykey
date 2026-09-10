@@ -4,7 +4,7 @@ Cross-platform (Windows / macOS / Linux) tray app + settings window. One Python
 codebase; reuses the project's config and spawns the same `recorder` / `server`.
 
 ```
-python -m ui            # or  ..\scripts\run-ui.ps1  /  ../scripts/run-ui.sh
+python -m ui            # Windows: ..\scripts\run.ps1
 ```
 
 ## Modules
@@ -24,5 +24,5 @@ python -m ui            # or  ..\scripts\run-ui.ps1  /  ../scripts/run-ui.sh
 
 ## Dependencies
 
-`requirements.txt` — `PySide6`, `sounddevice`, `pynput`. Install into the shared
-`.venv` with `scripts\install.ps1 -WithUI` or `pip install -r ui/requirements.txt`.
+`requirements.txt` — `PySide6`, `sounddevice`, `pynput`. `scripts\install.ps1`
+always installs these into the shared `.venv`.

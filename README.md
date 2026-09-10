@@ -50,9 +50,10 @@ saykey/
 │   ├── config_store.py  models_catalog.py  autostart.py  orchestrator.py  ...
 │   └── requirements.txt
 │
-├── scripts/                 setup + run helpers
-│   ├── install.ps1  uninstall.ps1
-│   ├── run-server.ps1  run-ui.ps1  run-ui.sh  run-agent.ps1
+├── scripts/                 two flows: install, then run  (Windows; PowerShell)
+│   ├── install.ps1  uninstall.ps1        one-time setup / teardown
+│   ├── run.ps1                           start everything (tray app)
+│   └── run-server.ps1                    ASR Docker container management
 │
 ├── models/                  downloaded models (git-ignored, shared by recorder + server)
 └── .venv/                   Python environment (git-ignored)
@@ -63,22 +64,29 @@ reads, so they always agree.
 
 ---
 
-## Desktop UI (recommended)
+## Two commands
+
+```powershell
+.\scripts\install.ps1     # one-time: deps, .venv, UI, fallback model, server image. Starts nothing.
+.\scripts\run.ps1         # start Saykey (tray app -> ASR server + dictation agent)
+```
+
+`install.ps1` is standalone: it creates every dependency on the machine and
+stops. `run.ps1` is the only thing that starts anything.
+
+## Desktop UI
 
 A cross-platform tray app (**PySide6** — one Python codebase for Windows / macOS
 / Linux) that manages everything from a settings window:
-
-```powershell
-.\scripts\install.ps1 -WithUI      # adds PySide6 to the venv
-.\scripts\run-ui.ps1
-```
 
 - Tray icon (colour reflects server / agent status), **start hidden**, **launch
   on OS startup**, single-instance (relaunch reopens Settings).
 - On launch it starts the ASR server (Docker) and, on Windows, the dictation
   agent (`agent/saykey.ahk`).
 - **Settings → General:** transcribe shortcut, hold-vs-toggle, microphone.
-  **Advanced:** start hidden / launch on startup / show tray icon / debugging.
+  **Advanced:** start hidden / launch on startup / show tray icon, and a
+  **Developer options** toggle (debugging, autostart of server & agent, and the
+  agent's Developer Options tray submenu).
   **Models:** pick from the catalogue (Parakeet EN 0.6B default) — applying it
   rebuilds + restarts the server.
 - Everything is written to the same `config.ini`, so the CLI tools stay in sync.
@@ -154,25 +162,43 @@ A cross-platform tray app (**PySide6** — one Python codebase for Windows / mac
 powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
 ```
 
-Common variants:
+Checks for / installs AutoHotkey v2 and Python (winget, with consent), creates
+`.venv` with the recorder **and** desktop-UI dependencies, downloads the Whisper
+fallback model, writes `config.ini`, and **builds** the Parakeet ASR image (first
+build pulls several GB). It **starts nothing** — `run.ps1` does that.
+
+Variants:
 
 ```powershell
-.\scripts\install.ps1 -WithUI -StartServer   # UI + build/launch the Docker server
 .\scripts\install.ps1 -Engine parakeet-v3    # multilingual Parakeet
-.\scripts\install.ps1 -Backend local         # Whisper-only, no server
+.\scripts\install.ps1 -Backend local         # Whisper-only, no Docker image
 .\scripts\install.ps1 -Yes                    # non-interactive
+.\scripts\install.ps1 -SkipModel              # don't download the fallback model
 ```
 
-The installer creates `.venv`, installs `recorder/requirements.txt` (+ `ui/`
-if `-WithUI`), downloads the Whisper fallback model, writes `config.ini`, and
-(for `-Backend server`) offers to build + start the container. First container
-build pulls several GB and downloads Parakeet — `run-server.ps1 up` waits up to
-5 minutes for it.
+---
 
-Manage the ASR server:
+## Run
 
 ```powershell
-.\scripts\run-server.ps1 up          # build if needed, start, wait for /health
+.\scripts\run.ps1
+```
+
+Launches the tray app, which starts the ASR server container (building it if
+`install.ps1` couldn't) and the dictation agent. Right-click the tray icon for
+Settings. Double-clicking `agent/saykey.ahk` runs just the agent.
+
+If Saykey isn't installed yet, `run.ps1` says so and offers to run `install.ps1`
+for you.
+
+> Windows only for now. The UI, server, and config are cross-platform (`python -m
+> ui` runs anywhere), but there's no dictation agent for macOS / Linux yet, so
+> there's no `run` script for them.
+
+Manage the ASR container directly (restart after a model change, logs, …):
+
+```powershell
+.\scripts\run-server.ps1 restart
 .\scripts\run-server.ps1 status
 .\scripts\run-server.ps1 logs -Follow
 .\scripts\run-server.ps1 down
@@ -181,11 +207,6 @@ Manage the ASR server:
 ---
 
 ## Usage
-
-**Desktop UI:** `.\scripts\run-ui.ps1` — the tray app starts the server + agent
-and gives you Settings.
-
-**Agent only:** `.\scripts\run-agent.ps1` (or double-click `agent/saykey.ahk`).
 
 **Push-to-talk** (`[hotkey] mode = hold`, default):
 
@@ -201,9 +222,11 @@ cancels. The indicator (`[toast]`) never takes keyboard focus.
 **Toggle** (`[hotkey] mode = toggle`): press to start, press again (or pause
 ~2 s) to stop.
 
-Agent tray menu: edit config, list audio devices, check the transcription
-backend, **restart recorder**, **debug logging** toggle, open the log, and an
-**ASR Docker server** submenu.
+Agent tray menu: list audio devices, toggle the floating talk button, open the
+log. With `[ui] developer_options = true` (Settings → Advanced → **Developer
+options**) it also shows a **Developer Options** submenu: edit config, check the
+transcription engine, restart the recorder, debug-logging toggle, and the **ASR
+Docker server** controls.
 
 ---
 
@@ -287,6 +310,7 @@ onnx-asr / faster-whisper models smaller and faster.
 | | `x` / `y` | — | explicit pixel position; written automatically when you drag it |
 | `ui` | `start_hidden` / `launch_on_startup` / `show_tray_icon` | | UI window behaviour |
 | | `autostart_server` / `autostart_agent` | `true` | start these when the UI launches |
+| | `developer_options` | `false` | show the Developer Options submenu (agent tray) + its toggles (Settings → Advanced) |
 
 ---
 
@@ -304,23 +328,25 @@ Keep the guest keyboard layout matching the host for `Raw` / `Event`.
 
 **The dictation key.** Some clients (Omnisa / VMware Horizon, Citrix) grab the
 keyboard while their window has focus, so a normal global hotkey never fires
-there. The agent works around it in three escalating ways:
+there. Two things try to catch it anyway:
 
-1. **Forced keyboard hook** at the head of the `WH_KEYBOARD_LL` chain, re‑asserted
-   on every focus change — enough for most clients.
-2. **Raw input** (`RIDEV_INPUTSINK`) — a separate pipeline the client can't
-   intercept. Note the key press then *also* reaches the guest (`Ctrl+Space` is
+1. a **hook hotkey** (`$` prefix) instead of `RegisterHotkey`;
+2. **raw input** (`RIDEV_INPUTSINK`) — a separate pipeline the client can't
+   intercept. The key press then *also* reaches the guest (`Ctrl+Space` is
    harmless in most apps; if not, set `[hotkey] key` to a spare key like `Pause`,
    `AppsKey`, `ScrollLock`, `SC152`).
-3. **Floating talk button** (`[button] enabled = true`, or tray → *Floating talk
-   button*) — for clients that capture the keyboard so completely that even raw
-   input is blocked. A small always‑on‑top button: **left‑click‑hold to talk**
-   (click to start/stop in `mode = toggle`), **right‑drag to move**. Mouse clicks
-   on a separate host window aren't affected by the client's keyboard capture, so
-   this always works. It never takes focus off the VDI.
+
+For clients that capture the keyboard so completely that neither fires (e.g. the
+Omnisa Cloud Desktop), use the **floating talk button** (`[button] enabled =
+true`, or tray → *Floating talk button*): a small always‑on‑top button,
+**left‑click‑hold to talk** (click to start/stop in `mode = toggle`),
+**right‑drag to move**. Mouse clicks on a separate host window aren't affected by
+the client's keyboard capture, so it always works, and it never takes focus off
+the VDI.
 
 Turn on `[general] debug` and watch `%TEMP%\saykey.log`: `raw: trigger key down`
-means path 2 is working; if that never appears with the VDI focused, use path 3.
+means path 2 is working; if that never appears with the VDI focused, use the
+button.
 
 ---
 
@@ -330,7 +356,7 @@ means path 2 is working; if that never appears with the VDI focused, use path 3.
 |---|---|
 | "Python executable not found" | run `scripts\install.ps1`; check `[general] python` |
 | Nothing on Ctrl+Space | another app / IME owns the hotkey — set `[hotkey] key = ^!Space`, tray → Reload |
-| Nothing on Ctrl+Space **only while the VDI window is focused** | the client is grabbing the keyboard. The agent forces its hook to the head of the chain and also listens via raw input. If `%TEMP%\saykey.log` (with `[general] debug`) shows no `raw: trigger key down` when you press the key with the VDI focused, the client blocks every keyboard path — enable the **floating talk button**: `[button] enabled = true` (tray → *Floating talk button*), then left-click-hold it to dictate |
+| Nothing on Ctrl+Space **only while the VDI window is focused** | the client is grabbing the keyboard. The agent uses a hook hotkey and also listens via raw input. If `%TEMP%\saykey.log` (with `[general] debug`) shows no `raw: trigger key down` when you press the key with the VDI focused, the client blocks every keyboard path — enable the **floating talk button**: `[button] enabled = true` (tray → *Floating talk button*), then left-click-hold it to dictate |
 | "Recorder daemon failed to start" | check the log; usually a mic-permission or dependency issue. Tray → Restart recorder |
 | First word clipped | wait for the beep before speaking |
 | Long pause on first server start | model download — `scripts\run-server.ps1 logs -Follow` |

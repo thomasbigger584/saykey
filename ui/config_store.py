@@ -53,11 +53,12 @@ _MAP = {
     "show_tray_icon":    ("ui", "show_tray_icon", "true"),
     "autostart_server":  ("ui", "autostart_server", "true"),
     "autostart_agent":   ("ui", "autostart_agent", "true"),
+    "developer_options": ("ui", "developer_options", "false"),
 }
 
 _BOOLS = {
     "debug", "toast_enabled", "start_hidden", "launch_on_startup",
-    "show_tray_icon", "autostart_server", "autostart_agent",
+    "show_tray_icon", "autostart_server", "autostart_agent", "developer_options",
 }
 _INTS = {"mic_device_index", "min_hold_ms", "max_seconds", "server_port"}
 
@@ -88,6 +89,7 @@ class Settings:
     show_tray_icon: bool = True
     autostart_server: bool = True
     autostart_agent: bool = True
+    developer_options: bool = False
 
     def as_dict(self) -> dict:
         return asdict(self)

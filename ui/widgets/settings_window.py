@@ -108,18 +108,38 @@ class SettingsWindow(QWidget):
         self.cb_start_hidden = QCheckBox("Start hidden (tray only, no window)")
         self.cb_launch_startup = QCheckBox("Launch on OS startup")
         self.cb_tray_icon = QCheckBox("Show tray icon")
-        self.cb_debug = QCheckBox("Enable debugging (verbose log to %TEMP%\\saykey.log)")
-        self.cb_autostart_server = QCheckBox("Start the ASR server when this app launches")
-        self.cb_autostart_agent = QCheckBox("Start the dictation agent when this app launches")
-        for cb in (self.cb_start_hidden, self.cb_launch_startup, self.cb_tray_icon,
-                   self.cb_debug, self.cb_autostart_server, self.cb_autostart_agent):
+        for cb in (self.cb_start_hidden, self.cb_launch_startup, self.cb_tray_icon):
             form.addRow(cb)
+
         note = QLabel("Turning off the tray icon means the app can only be reopened by "
                       "launching it again (which shows this window).")
         note.setWordWrap(True)
         note.setStyleSheet("color: gray;")
         form.addRow(note)
+
+        # --- Developer options: hidden unless the toggle below is on ----------
+        self.cb_dev_options = QCheckBox("Developer options")
+        self.cb_dev_options.toggled.connect(self._toggle_dev_options)
+        form.addRow(self.cb_dev_options)
+
+        self.cb_debug = QCheckBox("Enable debugging (verbose log to %TEMP%\\saykey.log)")
+        self.cb_autostart_server = QCheckBox("Start the ASR server when this app launches")
+        self.cb_autostart_agent = QCheckBox("Start the dictation agent when this app launches")
+        self._dev_box = QWidget()
+        dev_layout = QVBoxLayout(self._dev_box)
+        dev_layout.setContentsMargins(16, 0, 0, 0)
+        for cb in (self.cb_debug, self.cb_autostart_server, self.cb_autostart_agent):
+            dev_layout.addWidget(cb)
+        dev_note = QLabel("Also unlocks the agent tray menu's Developer Options "
+                          "(edit config, engine check, restart recorder, ASR server).")
+        dev_note.setWordWrap(True)
+        dev_note.setStyleSheet("color: gray;")
+        dev_layout.addWidget(dev_note)
+        form.addRow(self._dev_box)
         return w
+
+    def _toggle_dev_options(self, on: bool) -> None:
+        self._dev_box.setVisible(on)
 
     def _models_tab(self) -> QWidget:
         w = QWidget()
@@ -161,6 +181,8 @@ class SettingsWindow(QWidget):
         self.cb_debug.setChecked(s.debug)
         self.cb_autostart_server.setChecked(s.autostart_server)
         self.cb_autostart_agent.setChecked(s.autostart_agent)
+        self.cb_dev_options.setChecked(s.developer_options)
+        self._dev_box.setVisible(s.developer_options)
 
         current = models_catalog.match(
             backend=s.backend, engine=s.engine, model_override=s.model_override)
@@ -183,6 +205,7 @@ class SettingsWindow(QWidget):
         s.debug = self.cb_debug.isChecked()
         s.autostart_server = self.cb_autostart_server.isChecked()
         s.autostart_agent = self.cb_autostart_agent.isChecked()
+        s.developer_options = self.cb_dev_options.isChecked()
 
         item = self.model_list.currentItem()
         if item:

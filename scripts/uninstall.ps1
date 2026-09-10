@@ -129,7 +129,7 @@ foreach ($dir in $startupDirs) {
     Get-ChildItem -LiteralPath $dir -Filter '*.lnk' -ErrorAction SilentlyContinue | ForEach-Object {
         $t = ""
         try { $t = ($sh.CreateShortcut($_.FullName)).TargetPath + " " + ($sh.CreateShortcut($_.FullName)).Arguments } catch {}
-        if ($t -match [regex]::Escape($root) -and $t -match 'saykey|run-agent|run-ui|\bui\b') {
+        if ($t -match [regex]::Escape($root) -and $t -match 'saykey|run\.ps1|\bui\b') {
             Remove-Path $_.FullName "auto-start shortcut ($($_.Name))"
         }
     }

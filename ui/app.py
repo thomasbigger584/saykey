@@ -112,7 +112,8 @@ class App(QObject):
         self.tray.setVisible(new_settings.show_tray_icon)
 
         if any(k in changed for k in ("shortcut", "shortcut_mode", "mic_device_index",
-                                      "debug", "toast_enabled", "toast_position")):
+                                      "debug", "toast_enabled", "toast_position",
+                                      "developer_options")):
             if self.agent.running():
                 self.agent.restart()
                 self._notify("Dictation agent", "Restarted with new settings.")

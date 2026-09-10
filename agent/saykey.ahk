@@ -72,6 +72,10 @@ C["button_font"]       := readCfg("button", "font_size", "11")
 C["button_x"]          := Integer(readCfg("button", "x", "-1"))
 C["button_y"]          := Integer(readCfg("button", "y", "-1"))
 
+; Developer Options: gates the internals submenu in the tray (config, engine
+; check, recorder restart, ASR Docker server). Toggled in the UI's Advanced tab.
+C["dev_options"]       := readCfg("ui", "developer_options", "false") = "true"
+
 global HK_MODE    := StrLower(readCfg("hotkey", "mode", "hold"))
 global HK_KEY     := readCfg("hotkey", "key", "^Space")
 global HK_CANCEL  := readCfg("hotkey", "cancel", "^+Space")
@@ -108,9 +112,6 @@ global T_DEV         := A_Temp "\saykey_devices.txt"
 global gState := "idle"      ; idle | starting | recording | transcribing
 global gPressTick := 0
 global DAEMON_PID := 0
-global gWinEventHook := 0
-global gWinEventCb := 0
-global gBurstLeft := 0
 
 ; ---- raw-input keyboard trigger (works when a VDI client eats the hook chain) --
 global gTalkActive := false      ; a hold/toggle talk session is in progress
@@ -142,20 +143,11 @@ if (A_Args.Length && A_Args[1] = "--test-toast") {
 }
 
 buildTray()
-; Own the keyboard hook and sit at the HEAD of the hook chain. Remote-desktop
-; clients (Omnisa/VMware Horizon, Citrix, RDP) install their own WH_KEYBOARD_LL
-; hook to forward keystrokes to the guest and swallow them on the host; a plain
-; RegisterHotkey is processed AFTER every such hook and would never see the key.
-; InstallKeybdHook(true, true) forces our hook in front of hooks installed later
-; (e.g. when you connect to a session), and reassertKeybdHook() keeps it there.
-InstallKeybdHook(true, true)
 if (HK_MODE = "toggle")
     registerHotkey(HK_KEY, onToggle, "key")
 else
     registerHotkey(HK_KEY, onKeyDown, "key")
 registerHotkey(HK_CANCEL, onCancel, "cancel")
-installForegroundWatch()                     ; reclaim head-of-chain on focus change
-SetTimer(reassertKeybdHook, 2500)            ; ... and periodically, for in-place reconnects
 initRawInput()                               ; parallel trigger: raw HID input, not the hook chain
 OnExit(onExitCleanup)
 setIdleTip()
@@ -166,8 +158,8 @@ TrayTip((HK_MODE = "hold" ? "Hold " HK_KEY " to talk" : "Press " HK_KEY " to dic
 ; --------------------------------------------------------------- registration
 registerHotkey(combo, handler, name) {
     global
-    ; "$" forces the hook implementation for this hotkey (see InstallKeybdHook
-    ; above) instead of RegisterHotkey, which a VDI client's hook always beats.
+    ; "$" forces the keyboard-hook implementation for this hotkey (more reliable
+    ; for a Send-heavy script) rather than RegisterHotkey.
     hk := InStr(combo, "$") ? combo : "$" combo
     try {
         Hotkey(hk, (*) => handler())
@@ -177,48 +169,6 @@ registerHotkey(combo, handler, name) {
             . "`n`nAutoHotkey syntax:  ^ = Ctrl   ! = Alt   + = Shift   # = Win"
             . "`nExample:  ^Space   (Ctrl+Space)", APP, "Icon!")
     }
-}
-
-; ---------------------------------------------------- keyboard-hook priority
-; Re-insert our keyboard hook at the head of the WH_KEYBOARD_LL chain so it runs
-; before a remote-desktop client's hook (the client installs its hook when it
-; starts / when a session connects, which would otherwise put it ahead of ours).
-reassertKeybdHook() {
-    global
-    if (gState = "idle")                     ; don't disturb an in-progress KeyWait
-        try InstallKeybdHook(true, true)
-}
-
-; A short burst of re-asserts: the client may (re)install its own hook a beat
-; after it gains focus, so grab the head of the chain again a few more times.
-reassertBurst() {
-    global gBurstLeft
-    gBurstLeft := 5
-    reassertBurstTick()
-}
-reassertBurstTick() {
-    global gBurstLeft
-    reassertKeybdHook()
-    if (--gBurstLeft > 0)
-        SetTimer(reassertBurstTick, -400)
-}
-
-; Fire reassertKeybdHook() whenever the foreground window changes -- i.e. every
-; time you click into (or out of) the Cloud Desktop.
-installForegroundWatch() {
-    global
-    gWinEventCb := CallbackCreate(onForegroundChanged, "F", 7)
-    ; SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, NULL, cb,
-    ;                 0, 0, WINEVENT_OUTOFCONTEXT)
-    gWinEventHook := DllCall("SetWinEventHook"
-        , "uint", 0x0003, "uint", 0x0003
-        , "ptr", 0, "ptr", gWinEventCb
-        , "uint", 0, "uint", 0
-        , "uint", 0x0000, "ptr")
-}
-
-onForegroundChanged(hHook, event, hwnd, idObject, idChild, thread, ms) {
-    reassertBurst()
 }
 
 ; -------------------------------------------------------------- talk primitives
@@ -590,8 +540,6 @@ warmWatch() {
 
 onExitCleanup(*) {
     global
-    if gWinEventHook
-        try DllCall("UnhookWinEvent", "ptr", gWinEventHook)
     try FileAppend("1", CTL_QUIT)
     Sleep(200)
     if (DAEMON_PID && ProcessExist(DAEMON_PID))
@@ -917,25 +865,33 @@ buildTray() {
     A_TrayMenu.Add(label, (*) => "")
     A_TrayMenu.Disable(label)
     A_TrayMenu.Add()
-    A_TrayMenu.Add("Edit config.ini", (*) => Run('notepad.exe "' ConfigFile '"'))
     A_TrayMenu.Add("List audio devices", (*) => showDevices())
-    A_TrayMenu.Add("Check transcription engine", (*) => warmupEngine())
-    A_TrayMenu.Add("Restart recorder", (*) => restartDaemon())
-    A_TrayMenu.Add("Re-grab hotkey (after connecting to VDI)", (*) => (InstallKeybdHook(true, true), TrayTip("Hotkey re-grabbed", APP, 0x1)))
     A_TrayMenu.Add("Floating talk button", (*) => toggleButton())
     if C["button_enabled"]
         A_TrayMenu.Check("Floating talk button")
     A_TrayMenu.Add("Open log", (*) => (FileExist(T_LOG) ? Run('notepad.exe "' T_LOG '"') : TrayTip("No log yet", APP, 0x1)))
-    A_TrayMenu.Add("Debug logging", (*) => toggleDebug())
-    if DEBUG
-        A_TrayMenu.Check("Debug logging")
-    A_TrayMenu.Add()
-    sub := Menu()
-    sub.Add("Start / update ASR server", (*) => serverAction("up"))
-    sub.Add("Server status", (*) => serverAction("status"))
-    sub.Add("Server logs", (*) => serverAction("logs"))
-    sub.Add("Stop ASR server", (*) => serverAction("down"))
-    A_TrayMenu.Add("ASR Docker server", sub)
+
+    ; ---- Developer Options: only shown when [ui] developer_options = true ----
+    if C["dev_options"] {
+        serverSub := Menu()
+        serverSub.Add("Start / update ASR server", (*) => serverAction("up"))
+        serverSub.Add("Server status", (*) => serverAction("status"))
+        serverSub.Add("Server logs", (*) => serverAction("logs"))
+        serverSub.Add("Stop ASR server", (*) => serverAction("down"))
+
+        devSub := Menu()
+        devSub.Add("Edit config.ini", (*) => Run('notepad.exe "' ConfigFile '"'))
+        devSub.Add("Check transcription engine", (*) => warmupEngine())
+        devSub.Add("Restart recorder", (*) => restartDaemon())
+        devSub.Add("Debug logging", (*) => toggleDebug())
+        if DEBUG
+            devSub.Check("Debug logging")
+        devSub.Add("ASR Docker server", serverSub)
+
+        A_TrayMenu.Add()
+        A_TrayMenu.Add("Developer Options", devSub)
+    }
+
     A_TrayMenu.Add()
     A_TrayMenu.Add("Reload", (*) => Reload())
     A_TrayMenu.Add("Exit", (*) => ExitApp())
