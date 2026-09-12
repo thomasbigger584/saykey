@@ -22,13 +22,13 @@ python -m ui            # Windows: ..\scripts\run.ps1
 
 | file | role |
 |---|---|
-| `app.py` | the one tray icon + menu, single-instance, status polling (fast file tick + off-thread server/Docker probe), orchestration wiring |
+| `app.py` | the one tray icon + menu, single-instance, status polling (fast file tick + off-thread ASR server health probe), orchestration wiring |
 | `status.py` | reads the agent's `activity` / `events.tsv` and merges in UI-side events → one feed |
 | `theme.py` | the dark QSS stylesheet, palette constants, runtime-drawn glyphs |
 | `audio.py` | microphone enumeration + a `sounddevice` input-level sampler for the VU meters |
 | `config_store.py` | typed load/save over the root `config.ini` — preserves comments; the only writer the UI uses |
 | `models_catalog.py` | the model list; each entry maps to `[server] engine` / `model` / `backend` (default: Parakeet Unified EN 0.6B) |
-| `orchestrator.py` | `docker compose` up/down/restart, `docker_available()` / `gpu_name()`, and the Windows AHK agent lifecycle (graceful stop / reload / button / suspend signals) |
+| `orchestrator.py` | `AsrServer` (starts/stops the local `uvicorn` ASR server process, no Docker) + `gpu_name()`, and the Windows AHK agent lifecycle (graceful stop / reload / button / suspend signals) |
 | `autostart.py` | launch-on-startup: Windows registry · macOS LaunchAgent · Linux `.desktop` |
 | `shortcuts.py` | `^!Space` ⇄ `Ctrl+Alt+Space` (config form ⇄ the capture widget) |
 | `paths.py` | every project path, resolved from the package location |
@@ -40,7 +40,7 @@ python -m ui            # Windows: ..\scripts\run.ps1
 
 Each panel reads/writes `config.ini` only through `config_store` and never
 touches keys it doesn't own; the shell diffs the result so `Save` only restarts
-the agent / rebuilds the ASR container when a key that actually needs it changed.
+the agent / ASR server process when a key that actually needs it changed.
 
 ## Dependencies
 

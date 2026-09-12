@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QProgressBar, QVBoxLayout
 
 from .. import theme
 from ..models_catalog import ModelChoice
@@ -53,7 +53,7 @@ class ModelCard(QFrame):
         desc.setProperty("dim", True)
         self.status = QLabel()
 
-        self._tier = _pill("GPU · Docker" if not is_local else "LOCAL · CPU",
+        self._tier = _pill("GPU · Local service" if not is_local else "LOCAL · CPU",
                            theme.TEXT_DIM, theme.BG_RAISE, theme.BORDER)
         self._state = QLabel()          # APPLIED / SELECTED pill (hidden when neither)
         self._state.setAlignment(Qt.AlignCenter)
@@ -67,9 +67,39 @@ class ModelCard(QFrame):
         col.addWidget(desc)
         col.addWidget(self.status)
 
+        self._progress = QProgressBar()
+        self._progress.setFixedHeight(6)
+        self._progress.setTextVisible(False)
+        self._progress.setRange(0, 100)
+        self._progress.setStyleSheet(
+            f"QProgressBar {{ background: {theme.BG_RAISE}; border: none; border-radius: 3px; }}"
+            f"QProgressBar::chunk {{ background: {theme.BUSY}; border-radius: 3px; }}")
+        self._progress.hide()
+        self._progress_lbl = QLabel()
+        self._progress_lbl.setWordWrap(True)
+        self._progress_lbl.setStyleSheet(f"color: {theme.BUSY}; font-size: 11px;")
+        self._progress_lbl.hide()
+        col.addWidget(self._progress)
+        col.addWidget(self._progress_lbl)
+
         h.addWidget(icon)
         h.addLayout(col, 1)
         self._restyle()
+
+    def set_loading(self, phase: str | None, progress: int | None, detail: str) -> None:
+        """Drive the download/loading progress bar -- called every status tick
+        for whichever card is the currently-configured (applied) model."""
+        active = phase in ("launching", "loading")
+        self._progress.setVisible(active)
+        self._progress_lbl.setVisible(active and bool(detail))
+        if not active:
+            return
+        if progress is None:
+            self._progress.setRange(0, 0)     # indeterminate / busy pulse
+        else:
+            self._progress.setRange(0, 100)
+            self._progress.setValue(progress)
+        self._progress_lbl.setText(detail)
 
     def set_state(self, selected: bool, current: bool) -> None:
         self._selected, self._current = selected, current

@@ -56,13 +56,13 @@ CATALOG: list[ModelChoice] = [
     ModelChoice(
         id="whisper-large-v3",
         label="Whisper large-v3  (server)",
-        description="OpenAI Whisper large-v3 via faster-whisper in the container. Very accurate, slower.",
+        description="OpenAI Whisper large-v3 via faster-whisper in the ASR server. Very accurate, slower.",
         backend="server", engine="whisper", model_override="large-v3",
         size="~3 GB", languages="99 languages", gpu_recommended=True,
     ),
     ModelChoice(
         id="whisper-local",
-        label="Whisper base.en  (local, CPU, no Docker)",
+        label="Whisper base.en  (local, CPU)",
         description="Runs in-process on the CPU. No server needed — good for a laptop or a quick start.",
         backend="local", engine="whisper", model_override="base.en",
         size="~150 MB", languages="English", gpu_recommended=False,

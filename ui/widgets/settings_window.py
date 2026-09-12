@@ -37,6 +37,7 @@ class SettingsWindow(QWidget):
     applied = Signal(Settings, dict)     # (new settings, {changed field: (old, new)})
     recording_hotkey = Signal(bool)
     open_log = Signal()
+    open_server_log = Signal()
     edit_config = Signal()
     restart_agent = Signal()
     quit_app = Signal()
@@ -116,6 +117,7 @@ class SettingsWindow(QWidget):
         self.p_dictation.recording_hotkey.connect(self.recording_hotkey)
         self.p_dictation.mic_changed.connect(self._audio_follow)
         self.p_advanced.open_log.connect(self.open_log)
+        self.p_advanced.open_server_log.connect(self.open_server_log)
         self.p_advanced.edit_config.connect(self.edit_config)
         self.p_advanced.restart_agent.connect(self.restart_agent)
         self.p_advanced.quit_app.connect(self.quit_app)
@@ -186,11 +188,13 @@ class SettingsWindow(QWidget):
 
     # ------------------------------------------------------------- status in
     def set_status(self, *, server_txt: str, agent_ok: bool, activity: str,
-                   events, shortcut: str) -> None:
+                   events, shortcut: str, server_phase: str | None = None,
+                   server_progress: int | None = None, server_detail: str = "") -> None:
         self._activity = activity
         portable = shortcuts.ahk_to_portable(shortcut)
         self.dashboard.set_state(activity, portable)
-        self.status_bar.set_status(server_txt, agent_ok)
+        self.status_bar.set_status(server_txt, agent_ok, server_detail)
+        self.p_models.set_server_state(server_phase, server_progress, server_detail)
         self.p_advanced.set_events(events)
         self._sync_sampler()
 

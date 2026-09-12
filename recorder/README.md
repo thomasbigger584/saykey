@@ -1,7 +1,7 @@
 # recorder/ — audio capture + transcription routing
 
 Host-side Python. Captures microphone audio and gets it turned into text, either
-by the Docker ASR server or the in-process fallback.
+by the local ASR server process or the in-process fallback.
 
 ## `record.py`
 

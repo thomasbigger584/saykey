@@ -4,7 +4,7 @@ Typed read/write access to config.ini.
 This is the single source of truth shared by every part of the project:
   * saykey.ahk  (Windows dictation agent)
   * record.py        (recorder daemon + transcription)
-  * run-server.ps1   (Docker ASR server)
+  * run-server.ps1   (local ASR server)
   * this UI
 
 The UI only ever edits keys that already exist for those tools, plus a small

@@ -13,11 +13,12 @@ typed into the focused window. (Switch to press/press with `[hotkey] mode =
 toggle`.) A resident recorder keeps the microphone and the transcription backend
 warm, so a key press starts capture in ~100 ms.
 
-Transcription runs on **NVIDIA Parakeet** by default, served from a local
-**Docker** container on your GPU. The engine is swappable — Parakeet v2/v3,
-Canary, Whisper, any HuggingFace ASR model, or any OpenAI-compatible endpoint —
-from `config.ini` or the UI. If the container isn't running, the client falls
-back to in-process `faster-whisper` on the CPU so dictation still works.
+Transcription runs on **NVIDIA Parakeet** by default, served from a small local
+ASR server process on your GPU — no Docker required. The engine is swappable —
+Parakeet v2/v3, Canary, Whisper, any HuggingFace ASR model, or any
+OpenAI-compatible endpoint — from `config.ini` or the UI. If the server isn't
+running, the client falls back to in-process `faster-whisper` on the CPU so
+dictation still works.
 
 ---
 
@@ -36,11 +37,9 @@ saykey/
 │   ├── transcriber.py        server vs. local routing, automatic fallback
 │   └── requirements.txt
 │
-├── server/                  containerised ASR HTTP server
+├── server/                  ASR HTTP server (a plain local process, no Docker)
 │   ├── app.py                FastAPI, OpenAI-compatible /v1/audio/transcriptions
 │   ├── engines.py            pluggable engine registry (onnx-asr / faster-whisper / transformers / proxy)
-│   ├── Dockerfile  Dockerfile.dockerignore
-│   ├── docker-compose.yml  docker-compose.gpu.yml  .env.example
 │   ├── requirements.txt  requirements-hf.txt
 │   └── README.md
 │
@@ -51,10 +50,10 @@ saykey/
 │   └── requirements.txt
 │
 ├── scripts/                 Windows; PowerShell
-│   ├── install.ps1                       one-time setup (deps, venv, model, image)
+│   ├── install.ps1                       one-time setup (deps, venv, model, ASR server deps)
 │   ├── run.ps1   stop.ps1                start / stop everything
 │   ├── uninstall.ps1                     remove everything install.ps1 created
-│   └── run-server.ps1                    ASR Docker container management
+│   └── run-server.ps1                    local ASR server process management
 │
 ├── models/                  downloaded models (git-ignored, shared by recorder + server)
 └── .venv/                   Python environment (git-ignored)
@@ -68,10 +67,10 @@ reads, so they always agree.
 ## Scripts
 
 ```powershell
-.\scripts\install.ps1     # one-time: deps, .venv, UI, fallback model, server image. Starts nothing.
+.\scripts\install.ps1     # one-time: deps, .venv, UI, fallback model, ASR server deps. Starts nothing.
 .\scripts\run.ps1         # start Saykey (tray app -> ASR server + dictation agent)
 .\scripts\stop.ps1        # stop all of it (keeps everything installed)
-.\scripts\uninstall.ps1   # remove .venv, models, config, Docker image, caches
+.\scripts\uninstall.ps1   # remove .venv, models, config, caches
 ```
 
 `install.ps1` is standalone: it creates every dependency on the machine and
@@ -85,7 +84,8 @@ A cross-platform tray app (**PySide6** — one Python codebase for Windows / mac
 
 - **One tray icon** (colour reflects state). On launch it always starts the
   headless dictation agent (`agent/saykey.ahk`) and — unless a local model is
-  configured — the ASR server (Docker). The agent has no icon of its own.
+  configured — the ASR server (a local process, no Docker). The agent has no
+  icon of its own.
 - **Dashboard** — the default view: a big state‑coloured glowing mic (Ready /
   Recording / Transcribing / Error), the current instruction ("Hold **Ctrl+Space**
   to talk"), and a **Settings** button.
@@ -93,16 +93,16 @@ A cross-platform tray app (**PySide6** — one Python codebase for Windows / mac
   **Dictation & Hotkeys** (hotkey recorder, hold-vs-toggle, microphone with a
   live meter, floating‑button / toast toggles + positions, and a
   *Tuning (VDI Safe Injection)* grid: injection mode / key‑delay / chunk size &
-  delay) · **ASR Engine & Models** (model cards badged GPU‑Docker vs Local‑CPU,
+  delay) · **ASR Engine & Models** (model cards badged GPU‑local vs Local‑CPU,
   with **✓ APPLIED** vs **SELECTED** states and detected‑hardware context) ·
   **Advanced & Developer** (debug toggle, a chronological activity log, and a
-  **Quit Saykey** button that also stops the ASR container).
+  **Quit Saykey** button that also stops the ASR server process).
 - A **status bar** on every view: ASR Server and Dictation Agent state (the live
   mic meter lives on the Dictation panel).
 - **Save / Cancel**: `Save` writes every change to `config.ini` and returns to the
-  dashboard; it only restarts the agent or rebuilds the ASR container when a
+  dashboard; it only restarts the agent or the ASR server process when a
   setting that actually needs it changed (picking a different model is the only
-  thing that touches Docker).
+  thing that restarts the server).
 - **start hidden**, **launch on OS startup**, single‑instance (relaunch reopens
   the window).
 
@@ -123,7 +123,7 @@ A cross-platform tray app (**PySide6** — one Python codebase for Windows / mac
        │                        recorder/transcriber.py
        │                          ├── backend = server ──► POST /v1/audio/transcriptions
        │                          │                         ┌───────────────────────────┐
-       │                          │                         │  Docker: saykey-asr  │
+       │                          │                         │  local process: server/app.py │
        │                          │                         │  FastAPI + engine:        │
        │                          │                         │   Parakeet (onnx-asr) GPU │
        │                          │                         └───────────────────────────┘
@@ -137,14 +137,14 @@ A cross-platform tray app (**PySide6** — one Python codebase for Windows / mac
 - **`recorder/`** — captures audio, gets it transcribed. `record.py --serve` is the resident
   daemon (signal files in `%TEMP%\saykey_ctl`, exits if the agent dies); without `--serve`
   it's a one-shot CLI for `--warmup` / `--transcribe-wav` / `--list-devices`.
-- **`server/`** — transcribes, in a container. See [`server/README.md`](server/README.md).
+- **`server/`** — transcribes, as a local process (no Docker). See [`server/README.md`](server/README.md).
 - **`ui/`** — controls all of it. Cross-platform.
 
 ---
 
 ## Security / privacy
 
-- **Offline.** The container downloads the model once, then serves it locally; no
+- **Offline.** The ASR server downloads the model once, then serves it locally; no
   audio or text leaves the machine. The local fallback runs with `HF_HUB_OFFLINE`
   after setup. HF telemetry is disabled.
 - **No clipboard.** The host clipboard is never touched — clipboard-isolation
@@ -153,7 +153,7 @@ A cross-platform tray app (**PySide6** — one Python codebase for Windows / mac
   moves no data out of the remote session.
 - **Local only.** Audio stays in RAM; the transcript lives in `%TEMP%` and is
   deleted after it's typed.
-- **No elevation.** Nothing here needs admin (installing Docker/AHK/Python via winget may).
+- **No elevation.** Nothing here needs admin (installing AHK/Python via winget may).
 
 ---
 
@@ -163,11 +163,10 @@ A cross-platform tray app (**PySide6** — one Python codebase for Windows / mac
 |---|---|---|
 | Windows | 10 / 11 | the dictation agent (UI + server are cross-platform) |
 | AutoHotkey | **v2** | the dictation agent |
-| Python | 3.9+ | recorder + local fallback + UI |
-| Docker Desktop | recent | the Parakeet ASR server (GPU strongly recommended) |
+| Python | 3.10+ | recorder + local fallback + UI + ASR server (all in one `.venv`, no Docker) |
 | NVIDIA GPU + driver | any recent | Parakeet at full speed (CPU works but is slow) |
 
-`backend = local` (Whisper only, CPU) needs neither Docker nor a GPU.
+`backend = local` (Whisper only, CPU) needs no GPU either.
 
 ---
 
@@ -178,15 +177,17 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
 ```
 
 Checks for / installs AutoHotkey v2 and Python (winget, with consent), creates
-`.venv` with the recorder **and** desktop-UI dependencies, downloads the Whisper
-fallback model, writes `config.ini`, and **builds** the Parakeet ASR image (first
-build pulls several GB). It **starts nothing** — `run.ps1` does that.
+`.venv` with the recorder, desktop-UI, **and** ASR server dependencies (picking
+`onnxruntime` or `onnxruntime-gpu` based on detected GPU — no Docker, no image
+build), downloads the Whisper fallback model, and writes `config.ini`. It
+**starts nothing** — `run.ps1` does that.
 
 Variants:
 
 ```powershell
 .\scripts\install.ps1 -Engine parakeet-v3    # multilingual Parakeet
-.\scripts\install.ps1 -Backend local         # Whisper-only, no Docker image
+.\scripts\install.ps1 -Backend local         # Whisper-only, no ASR server install
+.\scripts\install.ps1 -InstallHF              # also install torch/transformers (hf:<id> engines)
 .\scripts\install.ps1 -Yes                    # non-interactive
 .\scripts\install.ps1 -SkipModel              # don't download the fallback model
 ```
@@ -199,9 +200,9 @@ Variants:
 .\scripts\run.ps1
 ```
 
-Launches the tray app, which starts the ASR server container (building it if
-`install.ps1` couldn't) and the dictation agent. Right-click the tray icon for
-Settings. Double-clicking `agent/saykey.ahk` runs just the agent.
+Launches the tray app, which starts the ASR server (a local process, no
+Docker) and the dictation agent. Right-click the tray icon for Settings.
+Double-clicking `agent/saykey.ahk` runs just the agent.
 
 If Saykey isn't installed yet, `run.ps1` says so and offers to run `install.ps1`
 for you.
@@ -210,7 +211,7 @@ for you.
 > ui` runs anywhere), but there's no dictation agent for macOS / Linux yet, so
 > there's no `run` script for them.
 
-Manage the ASR container directly (restart after a model change, logs, …):
+Manage the ASR server process directly (restart after a model change, logs, …):
 
 ```powershell
 .\scripts\run-server.ps1 restart
@@ -225,13 +226,13 @@ Manage the ASR container directly (restart after a model change, logs, …):
 
 ```powershell
 .\scripts\stop.ps1                # stop everything
-.\scripts\stop.ps1 -KeepServer    # ... but leave the ASR container running
+.\scripts\stop.ps1 -KeepServer    # ... but leave the ASR server process running
 ```
 
 Stops the tray app, the dictation agent (which deregisters the global hotkey),
-the resident recorder, and the ASR container, and clears the transient signal
-files in `%TEMP%`. It removes **nothing** installed — `.venv`, `models`,
-`config.ini`, the Docker image and the "launch on startup" setting all stay.
+the resident recorder, and the ASR server process, and clears the transient
+signal files in `%TEMP%`. It removes **nothing** installed — `.venv`, `models`,
+`config.ini`, and the "launch on startup" setting all stay.
 `run.ps1` brings it straight back; `uninstall.ps1` is the one that deletes.
 
 ---
@@ -427,10 +428,10 @@ to the systems you connect to. Check your organisation's endpoint policy first.
 powershell -ExecutionPolicy Bypass -File .\scripts\uninstall.ps1
 ```
 
-Reverses `install.ps1`: stops the UI / agent / recorder (which deregisters the
-hotkeys), removes the Docker container + image, clears the "launch on startup"
-entry, and deletes `.venv`, `models`, `config.ini`, and generated logs / temp
-files. Source files and `.git` are untouched.
+Reverses `install.ps1`: stops the UI / agent / recorder / ASR server process
+(which deregisters the hotkeys), clears the "launch on startup" entry, and
+deletes `.venv`, `models`, `config.ini`, and generated logs / temp files.
+Source files and `.git` are untouched.
 
 ```powershell
 .\scripts\uninstall.ps1 -DryRun              # show what would be removed

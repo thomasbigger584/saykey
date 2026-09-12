@@ -2,8 +2,8 @@
 Client-side transcription router used by record.py.
 
 backend = server : POST a 16 kHz mono WAV to an OpenAI-compatible
-                   /v1/audio/transcriptions endpoint -- the bundled Docker
-                   ASR server, or speaches / an NVIDIA Riva gateway / a remote
+                   /v1/audio/transcriptions endpoint -- the local ASR server
+                   process, or speaches / an NVIDIA Riva gateway / a remote
                    box / a cloud API. Can fall back to local automatically.
 backend = local  : transcribe in-process with faster-whisper (CPU).
 

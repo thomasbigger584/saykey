@@ -44,10 +44,13 @@ class StatusBar(QFrame):
             h.addWidget(w)
         h.addStretch(1)
 
-    def set_status(self, server_txt: str, agent_ok: bool) -> None:
+    def set_status(self, server_txt: str, agent_ok: bool, server_detail: str = "") -> None:
         colour, glyph = _server_glyph(server_txt)
         self._srv_icon.setPixmap(theme.glyph(glyph, 14, colour).pixmap(14, 14))
-        self._srv_txt.setText(f"ASR Server: {server_txt}")
+        text = f"ASR Server: {server_txt}"
+        if server_detail:
+            text += f"  —  {server_detail}"
+        self._srv_txt.setText(text)
 
         a_colour = theme.ACCENT if agent_ok else theme.RECORDING
         self._agent_icon.setPixmap(

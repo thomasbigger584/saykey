@@ -1,6 +1,6 @@
-# Saykey ASR server -- base image dependencies.
-# onnxruntime / onnxruntime-gpu is installed separately by the Dockerfile
-# (build arg ORT_PACKAGE) so the same file works for CPU and GPU builds.
+# Saykey ASR server -- base dependencies.
+# onnxruntime / onnxruntime-gpu is installed separately (scripts\install.ps1
+# picks the right one based on detected GPU) so this file works for both.
 
 fastapi>=0.110
 uvicorn[standard]>=0.29

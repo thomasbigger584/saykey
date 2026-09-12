@@ -28,6 +28,7 @@ def _esc(s: str) -> str:
 
 class AdvancedPanel(QWidget):
     open_log = Signal()
+    open_server_log = Signal()
     edit_config = Signal()
     restart_agent = Signal()
     quit_app = Signal()
@@ -55,6 +56,7 @@ class AdvancedPanel(QWidget):
         dv.addWidget(self.cb_debug)
         btns = QHBoxLayout()
         for text, sig in (("Open log", self.open_log),
+                          ("Open ASR server log", self.open_server_log),
                           ("Edit config.ini", self.edit_config),
                           ("Restart agent", self.restart_agent)):
             b = QPushButton(text)

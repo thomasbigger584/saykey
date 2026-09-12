@@ -15,10 +15,10 @@ CONFIG_EXAMPLE = PROJECT_ROOT / "config.example.ini"
 RECORD_PY = PROJECT_ROOT / "recorder" / "record.py"
 AHK_SCRIPT = PROJECT_ROOT / "agent" / "saykey.ahk"
 SERVER_DIR = PROJECT_ROOT / "server"
-COMPOSE_FILE = SERVER_DIR / "docker-compose.yml"
-COMPOSE_GPU_FILE = SERVER_DIR / "docker-compose.gpu.yml"
 MODELS_DIR = PROJECT_ROOT / "models"
 LOG_FILE = Path(os.environ.get("TEMP", tempfile.gettempdir())) / "saykey.log"
+# raw stdout/stderr of the ASR server child process (same path run-server.ps1 uses)
+ASR_LOG_FILE = Path(os.environ.get("TEMP", tempfile.gettempdir())) / "saykey_asr_server.log"
 
 # The headless agent (agent/saykey.ahk) and this UI rendezvous here. It matches
 # the AHK script's  CTLDIR := A_Temp "\saykey_ctl".

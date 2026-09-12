@@ -3,8 +3,7 @@
     uninstall.ps1 -- reverse install.ps1.  (Just want to stop it? Use stop.ps1.)
 
     Removes everything install.ps1 / run-server.ps1 created inside this project:
-      * running app + recorder daemon
-      * the Docker ASR container and image
+      * running app + recorder daemon + local ASR server process
       * .venv, models, config.ini, generated logs / temp files, __pycache__
 
     By default it backs out every artefact install.ps1 and normal use created,
@@ -14,7 +13,6 @@
 
     Options:
       -KeepModels        keep .\models (large; slow to re-download)
-      -KeepImage         keep the saykey-asr Docker image
       -KeepHFCache       keep %USERPROFILE%\.cache\huggingface (shared w/ other apps)
       -RemoveAutoHotkey  also `winget uninstall AutoHotkey.AutoHotkey`
       -RemovePython      also `winget uninstall Python.Python.3.12`
@@ -28,7 +26,6 @@
 [CmdletBinding()]
 param(
     [switch]$KeepModels,
-    [switch]$KeepImage,
     [switch]$KeepHFCache,
     [switch]$RemoveAutoHotkey,
     [switch]$RemovePython,
@@ -70,7 +67,7 @@ Write-Host "`n=== Saykey uninstaller ===" -ForegroundColor White
 if ($DryRun) { Warn "DRY RUN -- nothing will be changed" }
 if (-not $Yes -and -not $DryRun) {
     $extra = if ($KeepHFCache) { "" } else { ", HuggingFace cache" }
-    if (-not (Ask "Remove the local environment (.venv, models, config.ini, Docker image$extra)?")) {
+    if (-not (Ask "Remove the local environment (.venv, models, config.ini$extra)?")) {
         Write-Host "aborted."; exit 0
     }
 }
@@ -135,43 +132,16 @@ foreach ($dir in $startupDirs) {
     }
 }
 
-# --- 2. Docker ASR container + image ---------------------------------
-Step "Removing the Docker ASR server"
-$dockerOk = $false
-if (Get-Command docker -ErrorAction SilentlyContinue) {
-    Invoke-Native { docker info 2>&1 | Out-Null }
-    $dockerOk = ($LASTEXITCODE -eq 0)
+# --- 2. local ASR server process --------------------------------------
+Step "Stopping the local ASR server"
+$serverProcs = Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -and $_.CommandLine -match 'uvicorn' -and $_.CommandLine -match 'app:app' -and
+        $_.ExecutablePath -and $_.ExecutablePath.StartsWith($venvPyw) }
+foreach ($p in $serverProcs) {
+    if ($DryRun) { Warn "would stop ASR server PID $($p.ProcessId)" }
+    else { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue; Ok "stopped ASR server (PID $($p.ProcessId))" }
 }
-if ($dockerOk) {
-    $img = "saykey-asr:latest"
-    if (Test-Path (Join-Path $root 'config.ini')) {
-        # honour a custom [server] image tag
-        $line = Select-String -Path (Join-Path $root 'config.ini') -Pattern '^\s*image\s*=\s*(.+)$' -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($line) { $img = $line.Matches[0].Groups[1].Value.Trim() }
-    }
-    $composeF = Join-Path $root 'server\docker-compose.yml'
-    $rmi = if ($KeepImage) { "none" } else { "local" }
-    if ($DryRun) {
-        Warn "would run: docker compose -f server\docker-compose.yml down --remove-orphans --volumes --rmi $rmi"
-        Warn "would run: docker rm -f saykey-asr"
-        if (-not $KeepImage) { Warn "would run: docker image rm -f $img" }
-    }
-    else {
-        Invoke-Native { docker compose -f $composeF down --remove-orphans --volumes --rmi $rmi 2>&1 | Out-Null }
-        # belt-and-braces: the container / image by name, in case compose state is gone
-        Invoke-Native { docker rm -f saykey-asr 2>&1 | Out-Null }
-        Ok "ASR server stopped and container removed"
-        if (-not $KeepImage) {
-            Invoke-Native { docker image rm -f $img 2>&1 | Out-Null }
-            Ok "image $img removed (if it existed)"
-        }
-        else { Info "kept image $img (-KeepImage)" }
-    }
-}
-else {
-    Warn "Docker not running -- container/image (if any) left in place."
-    Warn "Start Docker Desktop and re-run, or:  docker rm -f saykey-asr ; docker image rm saykey-asr:latest"
-}
+if (-not $serverProcs -and -not $DryRun) { Ok "ASR server not running" }
 
 # --- 3. project-local files ----------------------------------------
 Step "Removing generated files in the project"
@@ -255,12 +225,10 @@ function Test-PkgInstalled([string]$id, [string[]]$commands) {
 
 $ahkState    = Test-PkgInstalled 'AutoHotkey.AutoHotkey' @('AutoHotkey64.exe', 'AutoHotkey.exe')
 $pyState     = Test-PkgInstalled 'Python.Python.3.12'    @('python.exe')
-$dockerState = Test-PkgInstalled 'Docker.DockerDesktop'  @('docker.exe')
 
 $stillInstalled = @()
 if ($ahkState    -ne $false) { $stillInstalled += 'AutoHotkey' }
 if ($pyState     -ne $false) { $stillInstalled += 'Python' }
-if ($dockerState -ne $false) { $stillInstalled += 'Docker Desktop' }
 
 $removable = @()
 if ($ahkState -ne $false) { $removable += '-RemoveAutoHotkey' }

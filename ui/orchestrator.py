@@ -1,7 +1,7 @@
 """
 Starts / stops the two moving parts:
 
-  * ASR server      -- the Docker container (docker compose), cross-platform
+  * ASR server      -- a local `uvicorn` child process (no Docker), cross-platform
   * dictation agent -- the thing that owns the global hotkey and types the
                        transcript into the focused window.
                        Windows: saykey.ahk (AutoHotkey v2).
@@ -15,38 +15,29 @@ from __future__ import annotations
 import functools
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
+import threading
 import urllib.request
 from pathlib import Path
 
 from .config_store import Settings
 from .paths import (
     AHK_SCRIPT,
-    COMPOSE_FILE,
-    COMPOSE_GPU_FILE,
+    ASR_LOG_FILE,
     CTL_DIR,
     MODELS_DIR,
     PROJECT_ROOT,
     SERVER_DIR,
+    venv_python,
 )
 
 _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 
 # ============================================================ ASR server
-def docker_available() -> bool:
-    """True only if the Docker CLI exists AND the daemon answers (Desktop running)."""
-    if not shutil.which("docker"):
-        return False
-    try:
-        return subprocess.run(["docker", "info"], capture_output=True, timeout=8,
-                               creationflags=_NO_WINDOW).returncode == 0
-    except Exception:  # noqa: BLE001  (timeout / OSError -> daemon not reachable)
-        return False
-
-
 def _has_nvidia_gpu() -> bool:
     return gpu_name() is not None
 
@@ -69,28 +60,6 @@ def gpu_name() -> str | None:
         return None
 
 
-def _compose_cmd(settings: Settings, extra: list[str]) -> list[str]:
-    files = ["-f", str(COMPOSE_FILE)]
-    if _has_nvidia_gpu() and settings.device != "cpu":
-        files += ["-f", str(COMPOSE_GPU_FILE)]
-    return ["docker", "compose", *files, *extra]
-
-
-def _compose_env(settings: Settings) -> dict:
-    env = os.environ.copy()
-    gpu = _has_nvidia_gpu() and settings.device != "cpu"
-    env.update(
-        ASR_ENGINE=settings.engine,
-        ASR_MODEL=settings.model_override,
-        ASR_DEVICE=settings.device,
-        ASR_QUANTIZATION=settings.quantization,
-        ASR_PORT=str(settings.server_port),
-        ORT_PACKAGE="onnxruntime-gpu" if gpu else "onnxruntime",
-        INSTALL_HF="true" if settings.engine.startswith("hf:") else "false",
-    )
-    return env
-
-
 def server_health(settings: Settings) -> dict | None:
     url = f"http://127.0.0.1:{settings.server_port}/health"
     try:
@@ -104,49 +73,142 @@ def server_running(settings: Settings) -> bool:
     return server_health(settings) is not None
 
 
-def start_server(settings: Settings) -> subprocess.Popen | None:
-    if not COMPOSE_FILE.exists() or not docker_available():
-        return None
-    MODELS_DIR.mkdir(exist_ok=True)
-    return subprocess.Popen(
-        _compose_cmd(settings, ["up", "-d", "--build"]),
-        cwd=str(SERVER_DIR), env=_compose_env(settings),
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=_NO_WINDOW,
-    )
+_PROGRESS_RE = re.compile(r"(\d{1,3})%\|")
 
 
-def stop_server(settings: Settings) -> None:
-    if not COMPOSE_FILE.exists() or not docker_available():
-        return
-    subprocess.run(_compose_cmd(settings, ["down"]), cwd=str(SERVER_DIR),
-                   env=_compose_env(settings), capture_output=True,
-                   creationflags=_NO_WINDOW)
+class AsrServer:
+    """Owns the local ASR server process -- a plain `uvicorn` child of this
+    app, running server/app.py in the project's own venv. No Docker, no
+    daemon: switching models just means stopping and re-starting this
+    process with new env vars.
 
+    Its stdout/stderr are drained by a background thread into ASR_LOG_FILE
+    and scanned for a few recognisable lines (huggingface_hub download
+    progress, engine-ready / engine-load-failed) so the UI can show more than
+    a static "starting...", including a progress bar while a model
+    downloads. Draining the pipe also avoids the child blocking once the OS
+    pipe buffer fills -- nobody was reading it before."""
 
-def restart_server(settings: Settings) -> None:
-    if not COMPOSE_FILE.exists() or not docker_available():
-        return
-    subprocess.run(_compose_cmd(settings, ["up", "-d", "--build", "--force-recreate"]),
-                   cwd=str(SERVER_DIR), env=_compose_env(settings),
-                   capture_output=True, creationflags=_NO_WINDOW)
+    def __init__(self) -> None:
+        self._proc: subprocess.Popen | None = None
+        self._lock = threading.Lock()
+        self._phase = "stopped"        # stopped|launching|loading|ready|error
+        self._progress: int | None = None
+        self._detail = ""
+        self._intentional_stop = False
 
+    def running(self) -> bool:
+        return self._proc is not None and self._proc.poll() is None
 
-def stop_server_detached(settings: Settings) -> None:
-    """Fire `docker compose down` and return at once -- it finishes on its own
-    even after the app has exited. Used by the in-app Quit button."""
-    if not COMPOSE_FILE.exists():
-        return
-    kwargs: dict = dict(cwd=str(SERVER_DIR), env=_compose_env(settings),
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                        stdin=subprocess.DEVNULL)
-    if sys.platform == "win32":
-        kwargs["creationflags"] = _NO_WINDOW | 0x00000008   # DETACHED_PROCESS
-    else:
-        kwargs["start_new_session"] = True
-    try:
-        subprocess.Popen(_compose_cmd(settings, ["down"]), **kwargs)
-    except Exception:  # noqa: BLE001
-        pass
+    def status(self) -> tuple[str, int | None, str]:
+        """(phase, progress 0-100 or None, human detail line)."""
+        with self._lock:
+            return self._phase, self._progress, self._detail
+
+    def start(self, settings: Settings) -> tuple[bool, str]:
+        if self.running():
+            return True, "already running"
+        if not (SERVER_DIR / "app.py").exists():
+            return False, "missing server/app.py"
+        MODELS_DIR.mkdir(exist_ok=True)
+        python = venv_python()
+        env = os.environ.copy()
+        env.update(
+            ASR_ENGINE=settings.engine,
+            ASR_MODEL=settings.model_override,
+            ASR_DEVICE=settings.device,
+            ASR_QUANTIZATION=settings.quantization,
+            HF_HOME=str(MODELS_DIR),   # replaces the old Docker `../models:/models` mount
+            PYTHONUNBUFFERED="1",
+        )
+        self._intentional_stop = False
+        with self._lock:
+            self._phase, self._progress = "launching", None
+            self._detail = "launching the ASR server process…"
+        try:
+            proc = subprocess.Popen(
+                [python, "-m", "uvicorn", "app:app",
+                 "--host", "127.0.0.1", "--port", str(settings.server_port)],
+                cwd=str(SERVER_DIR), env=env,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1, creationflags=_NO_WINDOW,
+            )
+        except OSError as exc:
+            self._proc = None
+            with self._lock:
+                self._phase, self._detail = "error", f"failed to launch: {exc}"
+            return False, f"failed to launch: {exc}"
+        self._proc = proc
+        threading.Thread(target=self._pump, args=(proc,), daemon=True).start()
+        return True, "started"
+
+    def _pump(self, proc: subprocess.Popen) -> None:
+        try:
+            with open(ASR_LOG_FILE, "a", encoding="utf-8", errors="replace") as log:
+                log.write(f"\n--- Saykey ASR server starting (PID {proc.pid}) ---\n")
+                for line in iter(proc.stdout.readline, ""):
+                    line = line.rstrip("\r\n")
+                    if not line:
+                        continue
+                    log.write(line + "\n")
+                    log.flush()
+                    self._interpret(line)
+        except Exception:  # noqa: BLE001
+            pass
+        finally:
+            code = proc.poll()
+            with self._lock:
+                if not self._intentional_stop and code not in (None, 0):
+                    self._phase = "error"
+                    if not self._detail:
+                        self._detail = f"process exited (code {code})"
+
+    def _interpret(self, line: str) -> None:
+        m = _PROGRESS_RE.search(line)
+        if m:
+            name = line.split(":", 1)[0].strip()[:40]
+            pct = int(m.group(1))
+            with self._lock:
+                self._phase = "loading"
+                self._progress = pct
+                self._detail = f"downloading {name}… {pct}%" if name else f"downloading model… {pct}%"
+            return
+        low = line.lower()
+        if "engine ready" in low:
+            with self._lock:
+                self._phase, self._progress = "ready", 100
+                self._detail = line.split("]", 1)[-1].strip() or "engine ready"
+            return
+        if "engine load failed" in low:
+            with self._lock:
+                self._phase, self._progress = "error", None
+                self._detail = line.split("]", 1)[-1].strip() or "engine load failed"
+            return
+        if ("application startup complete" in low or "uvicorn running on" in low):
+            with self._lock:
+                if self._phase == "launching":
+                    self._phase = "loading"
+                    self._detail = "loading the model… (first use can take several minutes)"
+
+    def stop(self) -> None:
+        self._intentional_stop = True
+        if not self.running():
+            self._proc = None
+            with self._lock:
+                self._phase, self._progress, self._detail = "stopped", None, ""
+            return
+        self._proc.terminate()
+        try:
+            self._proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self._proc.kill()
+        self._proc = None
+        with self._lock:
+            self._phase, self._progress, self._detail = "stopped", None, ""
+
+    def restart(self, settings: Settings) -> tuple[bool, str]:
+        self.stop()
+        return self.start(settings)
 
 
 # ========================================================= dictation agent

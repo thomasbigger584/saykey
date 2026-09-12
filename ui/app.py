@@ -62,22 +62,28 @@ class App(QObject):
 
         self.settings = load()
         self.agent = orch.Agent()
+        self.server = orch.AsrServer()
         self.status = StatusFeed()
         self._settings_win: SettingsWindow | None = None
-        # cached results of the slow network / docker probes (updated off-thread)
+        # cached results of the slow network / process probes (updated off-thread)
         self._server_online = False
-        self._docker_ok = False
+        self._server_launched = False
         self._probing = False
         self._probed_once = False
-        self._server_state: str | None = None   # unused|online|starting|unreachable|stopped
+        self._server_state: str | None = None   # unused|online|starting|unreachable|error|stopped
         self._server_wanted = True               # False after the user stops it by hand
+        # throttling for the ASR server's phase/progress -> status-feed log lines
+        self._server_start_ts = 0.0
+        self._last_progress_bucket: int | None = None
+        self._last_phase_detail_logged: str | None = None
+        self._last_progress_log_ts = 0.0
 
         autostart.sync(self.settings.launch_on_startup)
 
         self._build_tray()
 
         # the server + agent always start with Saykey (the server only when a
-        # server model is configured -- a local model needs no Docker).
+        # server model is configured -- a local model needs no ASR server process).
         if self.settings.backend == "server":
             self._start_server_async()
         if orch.agent_supported():
@@ -92,7 +98,7 @@ class App(QObject):
         self._poll = QTimer()
         self._poll.timeout.connect(self._refresh_status)
         self._poll.start(1000)
-        # slow tick: kick a background probe of the ASR server / Docker
+        # slow tick: kick a background probe of the ASR server process
         self._probe_timer = QTimer()
         self._probe_timer.timeout.connect(self._kick_probe)
         self._probe_timer.start(3000)
@@ -129,6 +135,7 @@ class App(QObject):
         # developer-only shortcuts
         self._dev_menu = menu.addMenu("Developer")
         self._dev_menu.addAction("Open log file", self._open_log)
+        self._dev_menu.addAction("Open ASR server log", self._open_server_log)
         self._dev_menu.addAction("Edit config.ini", self._edit_config)
         self._dev_menu.addAction("Restart dictation agent", self._restart_agent)
         self._dev_menu.menuAction().setVisible(self.settings.developer_options)
@@ -158,6 +165,7 @@ class App(QObject):
             self._settings_win.applied.connect(self._on_settings_applied)
             self._settings_win.recording_hotkey.connect(self._suspend_agent)
             self._settings_win.open_log.connect(self._open_log)
+            self._settings_win.open_server_log.connect(self._open_server_log)
             self._settings_win.edit_config.connect(self._edit_config)
             self._settings_win.restart_agent.connect(self._restart_agent)
             self._settings_win.quit_app.connect(self._quit_full)
@@ -190,11 +198,10 @@ class App(QObject):
                 self.status.add("info", "Dictation agent restarted with new settings")
 
         if changed.get("backend", (None, None))[1] == "local":
-            # a local model needs no container -- shut it down
-            self.status.add("info", "ASR server: stopping (the local model needs no Docker)")
+            # a local model needs no ASR server process -- shut it down
+            self.status.add("info", "ASR server: stopping (the local model needs no server)")
             self._server_online = False
-            threading.Thread(target=orch.stop_server, args=(self.settings,),
-                             daemon=True).start()
+            threading.Thread(target=self.server.stop, daemon=True).start()
         elif any(k in changed for k in ("engine", "model_override", "backend",
                                         "device", "quantization")):
             if (changed.get("backend", (None, None))[1] == "server"
@@ -212,8 +219,8 @@ class App(QObject):
     def _prompt_server_restart(self, changed: dict) -> None:
         if QMessageBox.question(
             None, "ASR server",
-            "The model changed. Rebuild and restart the ASR server now?\n"
-            "(first build of a new model can take several minutes)",
+            "The model changed. Restart the ASR server now?\n"
+            "(first use of a new model downloads it, which can take a while)",
         ) == QMessageBox.Yes:
             self.status.add("info", "ASR server: restarting with the new model…")
             threading.Thread(target=self._server_task, args=("restart",),
@@ -227,8 +234,7 @@ class App(QObject):
             self._server_wanted = False
             self._server_online = False
             self.status.add("info", "ASR server: stopped")
-            threading.Thread(target=orch.stop_server, args=(self.settings,),
-                             daemon=True).start()
+            threading.Thread(target=self.server.stop, daemon=True).start()
 
     def _toggle_agent(self, checked: bool) -> None:
         if checked:
@@ -262,6 +268,10 @@ class App(QObject):
         from .paths import LOG_FILE
         _open_path(LOG_FILE)
 
+    def _open_server_log(self) -> None:
+        from .paths import ASR_LOG_FILE
+        _open_path(ASR_LOG_FILE)
+
     def _edit_config(self) -> None:
         from .paths import CONFIG_FILE
         _open_path(CONFIG_FILE)
@@ -275,37 +285,40 @@ class App(QObject):
 
     # ------------------------------------------------------------- server
     def _start_server_async(self) -> None:
-        # everything (incl. the blocking `docker info`) happens off the UI thread;
-        # _refresh_status turns the result into a single status-feed message
+        # everything (launching the process, waiting on it) happens off the UI
+        # thread; _refresh_status turns the result into a status-feed message
         self._server_wanted = True
         threading.Thread(target=self._server_task, args=("start",), daemon=True).start()
 
     def _server_task(self, kind: str) -> None:
-        """Bring the container up/back; leave the messaging to _refresh_status."""
-        if not orch.docker_available():
-            self._docker_ok = False
-            self._probed_once = True
-            return                                # -> "not reachable" transition
+        """Bring the ASR server process up/back; leave the messaging to _refresh_status."""
+        self._server_start_ts = time.time()
+        self._last_progress_bucket = None
+        self._last_phase_detail_logged = None
+        self._last_progress_log_ts = self._server_start_ts
         if kind == "start":
-            self.status.add("info", "ASR server: starting… (first run downloads the model)")
-            proc = orch.start_server(self.settings)
-            if proc:
-                proc.wait()
+            self.status.add("info", "ASR server: launching…")
+            ok, msg = self.server.start(self.settings)
         else:
-            orch.restart_server(self.settings)
+            self.status.add("info", "ASR server: restarting…")
+            ok, msg = self.server.restart(self.settings)
+        self._server_launched = ok
         self._probed_once = True
-        for _ in range(150):                       # up to ~5 min for a first build
+        if not ok:
+            self.status.add("error", f"ASR server: {msg}")
+            return
+        for _ in range(150):                       # up to ~5 min for a first model download
             self._server_online = orch.server_running(self.settings)
             if self._server_online:
                 return
-            if not orch.docker_available():        # Docker Desktop was closed
-                self._docker_ok = False
+            if not self.server.running():           # the process died
+                self._server_launched = False
                 return
             time.sleep(2)
 
     # ------------------------------------------------------------- status
     def _kick_probe(self) -> None:
-        """Run the blocking server / Docker checks on a worker thread."""
+        """Run the blocking server-health check on a worker thread."""
         if self._probing:
             return
         self._probing = True
@@ -313,10 +326,10 @@ class App(QObject):
         def work():
             try:
                 if self.settings.backend != "server":
-                    self._server_online = self._docker_ok = False
+                    self._server_online = self._server_launched = False
                     return
                 self._server_online = orch.server_running(self.settings)
-                self._docker_ok = self._server_online or orch.docker_available()
+                self._server_launched = self._server_online or self.server.running()
             finally:
                 self._probed_once = True
                 self._probing = False
@@ -327,13 +340,16 @@ class App(QObject):
         "unused": "not used (local model)",
         "online": "online",
         "starting": "starting…",
+        "error": "failed to start — local fallback",
         "unreachable": "not reachable — local fallback",
         "stopped": "stopped",
     }
     _SERVER_EVENT = {
         "online": ("ok", "ASR server: online"),
-        "unreachable": ("warn", "ASR server not reachable — Docker Desktop isn't "
-                        "running. Dictation still works via the local Whisper fallback."),
+        "error": ("error", "ASR server: failed to load the model. Dictation still "
+                  "works via the local Whisper fallback."),
+        "unreachable": ("warn", "ASR server not reachable. Dictation still works "
+                        "via the local Whisper fallback."),
     }
 
     def _server_status(self) -> str:
@@ -343,7 +359,12 @@ class App(QObject):
             return "online"
         if not self._server_wanted:
             return "stopped"
-        if self._docker_ok:
+        phase, _progress, _detail = self.server.status()
+        if phase == "error":
+            # process alive but the engine won't load -> "error"; process actually
+            # died -> the launch loop already flipped _server_launched off
+            return "error" if self.server.running() else "unreachable"
+        if self._server_launched:
             return "starting"
         return "unreachable"
 
@@ -355,6 +376,8 @@ class App(QObject):
         self.act_agent.setChecked(agent)
 
         srv = self._server_status()
+        phase, progress, detail = self.server.status()
+
         if not self._probed_once and srv != "unused":
             server_txt = "checking…"
         else:
@@ -363,8 +386,40 @@ class App(QObject):
                 self._server_state = srv
                 evt = self._SERVER_EVENT.get(srv)
                 if evt:
-                    self.status.add(*evt)
+                    level, base_msg = evt
+                    if detail and srv in ("error", "unreachable"):
+                        self.status.add(level, f"{base_msg} ({detail})")
+                    else:
+                        self.status.add(level, base_msg)
+                self._last_progress_bucket = None
+                self._last_phase_detail_logged = None
+                self._last_progress_log_ts = time.time()
             server_txt = self._SERVER_TXT[srv]
+
+        # observability: log concrete progress while starting, plus a periodic
+        # heartbeat so it never looks stuck at a bare "starting..."
+        if srv == "starting":
+            now = time.time()
+            logged = False
+            if progress is not None:
+                bucket = (progress // 10) * 10
+                if bucket != self._last_progress_bucket:
+                    self._last_progress_bucket = bucket
+                    self.status.add("info", f"ASR server: {detail}")
+                    logged = True
+            elif detail and detail != self._last_phase_detail_logged:
+                self._last_phase_detail_logged = detail
+                self.status.add("info", f"ASR server: {detail}")
+                logged = True
+            if logged:
+                self._last_progress_log_ts = now
+            elif now - self._last_progress_log_ts > 20:
+                elapsed = int(now - self._server_start_ts) if self._server_start_ts else 0
+                self.status.add("info", f"ASR server: still starting… ({elapsed}s elapsed — "
+                                         "first use can take several minutes while the model "
+                                         "downloads)")
+                self._last_progress_log_ts = now
+
         agent_txt = "running" if agent else ("stopped" if orch.agent_supported()
                                              else "n/a on this OS")
 
@@ -395,16 +450,18 @@ class App(QObject):
                 agent_ok=agent,
                 activity=activity if agent else "stopped",
                 events=self.status.events(),
-                shortcut=self.settings.shortcut)
+                shortcut=self.settings.shortcut,
+                server_phase=phase if srv == "starting" else None,
+                server_progress=progress if srv == "starting" else None,
+                server_detail=detail if srv == "starting" else "")
 
     # ------------------------------------------------------------- lifecycle
     def _quit_full(self) -> None:
-        """The in-app Quit button: stop the ASR container too, then exit
+        """The in-app Quit button: stop the ASR server too, then exit
         (same effect as scripts/stop.ps1)."""
         if self._settings_win is not None:
             self._settings_win.hide()
-        threading.Thread(target=orch.stop_server_detached,
-                         args=(self.settings,), daemon=True).start()
+        self.server.stop()
         self.quit()
 
     def quit(self) -> None:

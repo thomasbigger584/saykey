@@ -3,15 +3,15 @@
     stop.ps1 -- stop everything Saykey is running. Does NOT uninstall.
 
     Stops the tray app, the dictation agent (which deregisters the global
-    hotkey and removes the tray icon), the resident recorder, and the ASR
-    Docker container. Clears the transient signal files in %TEMP%.
+    hotkey and removes the tray icon), the resident recorder, and the local
+    ASR server process. Clears the transient signal files in %TEMP%.
 
-    Left untouched: .venv, models, config.ini, the saykey-asr Docker image,
-    the HuggingFace cache, and the "launch on startup" setting. run.ps1
-    brings it all straight back; uninstall.ps1 is the one that removes things.
+    Left untouched: .venv, models, config.ini, the HuggingFace cache, and
+    the "launch on startup" setting. run.ps1 brings it all straight back;
+    uninstall.ps1 is the one that removes things.
 
       .\stop.ps1                stop everything
-      .\stop.ps1 -KeepServer    leave the ASR server container running
+      .\stop.ps1 -KeepServer    leave the ASR server process running
 #>
 [CmdletBinding()]
 param(
@@ -90,27 +90,20 @@ if (Test-Path $ctl) {
     try { Remove-Item -LiteralPath $ctl -Recurse -Force -ErrorAction Stop; Ok "cleared runtime signal files" } catch {}
 }
 
-# 5. ASR Docker container (image is kept)
+# 5. local ASR server process (server/app.py via uvicorn, in this venv)
 if ($KeepServer) {
     Info "left the ASR server running (-KeepServer)"
 }
 else {
-    $runServer = Join-Path $scriptDir 'run-server.ps1'
-    $dockerUp = $false
-    if (Get-Command docker -ErrorAction SilentlyContinue) {
-        $eap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
-        docker info 2>&1 | Out-Null
-        $dockerUp = ($LASTEXITCODE -eq 0)
-        $ErrorActionPreference = $eap
+    $found = $false
+    foreach ($p in $procs | Where-Object {
+            ($_.Name -eq 'python.exe' -or $_.Name -eq 'pythonw.exe') -and
+            $_.CommandLine -match 'uvicorn' -and $_.CommandLine -match 'app:app' -and
+            $_.ExecutablePath -and $_.ExecutablePath.StartsWith($venvScripts, [StringComparison]::OrdinalIgnoreCase) }) {
+        $found = $true
+        $stopped += Stop-Proc $p "ASR server"
     }
-    if ($dockerUp -and (Test-Path $runServer)) {
-        Info "stopping the ASR server container ..."
-        & $runServer down
-        Ok "ASR server container stopped (image kept)"
-    }
-    elseif (-not $dockerUp) {
-        Info "Docker not running -- no container to stop"
-    }
+    if (-not $found) { Info "ASR server not running" }
 }
 
 Write-Host ""

@@ -47,7 +47,7 @@ class ModelsPanel(QWidget):
         title = QLabel("Curated Models")
         title.setProperty("h1", True)
         outer.addWidget(title)
-        outer.addWidget(_card("Recommended: GPU Server (Docker)   ·   "
+        outer.addWidget(_card("Recommended: GPU-accelerated (runs locally)   ·   "
                               "Fallback: CPU only (faster-whisper)"))
 
         scroll = QScrollArea()
@@ -116,3 +116,11 @@ class ModelsPanel(QWidget):
         for mid, card in self._cards.items():
             card.set_state(selected=(mid == self._selected_id),
                            current=(mid == self._current_id))
+
+    # ---- driven by the window: ASR server launching/downloading/loading ----
+    def set_server_state(self, phase: str | None, progress: int | None, detail: str) -> None:
+        for mid, card in self._cards.items():
+            if mid == self._current_id:
+                card.set_loading(phase, progress, detail)
+            else:
+                card.set_loading(None, None, "")

@@ -2,15 +2,16 @@
 Saykey ASR server.
 
 An OpenAI-compatible speech-to-text endpoint in front of a swappable engine
-(Parakeet via onnx-asr by default). Designed to run in the bundled Docker
-container; the AHK client POSTs 16 kHz mono WAV audio and gets back text.
+(Parakeet via onnx-asr by default). Runs as a plain local process (started by
+ui/orchestrator.py's AsrServer, no Docker needed); the AHK client POSTs
+16 kHz mono WAV audio and gets back text.
 
 Endpoints
     GET  /health                     -> {status, engine, model, device}
     GET  /v1/models                  -> OpenAI-style model list
     POST /v1/audio/transcriptions    -> {text, ...}   (multipart 'file', or raw body)
 
-Environment (set by docker compose from config.ini [server])
+Environment (set by AsrServer / run-server.ps1 from config.ini [server])
     ASR_ENGINE, ASR_MODEL, ASR_DEVICE, ASR_QUANTIZATION
     ASR_UPSTREAM_URL, ASR_UPSTREAM_KEY   (engine = openai)
     ASR_PRELOAD=1                        load the model at startup

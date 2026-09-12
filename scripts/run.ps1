@@ -1,9 +1,8 @@
 #Requires -Version 5.1
 # run.ps1 -- start Saykey.
 #
-# Launches the desktop tray app, which in turn starts the ASR server (Docker,
-# building the image on first run if install.ps1 couldn't) and the Windows
-# dictation agent.
+# Launches the desktop tray app, which in turn starts the ASR server (a local
+# process, no Docker) and the Windows dictation agent.
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $installer = Join-Path $root 'scripts\install.ps1'
 $pyw = Join-Path $root '.venv\Scripts\pythonw.exe'
@@ -22,7 +21,7 @@ if (-not (Test-Path $py)) {
     Write-Host ""
     Write-Bad "Saykey isn't set up on this machine yet (no .venv)."
     Write-Bad "It needs a one-time install: a Python virtual environment, the"
-    Write-Bad "desktop UI, the offline fallback model, and the ASR server image."
+    Write-Bad "desktop UI, the offline fallback model, and the ASR server dependencies."
     Write-Host ""
     Write-Host "    powershell -ExecutionPolicy Bypass -File `"$installer`"" -ForegroundColor White
     Write-Host ""

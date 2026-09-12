@@ -18,7 +18,7 @@ One-shot capture stops on the first of:
 
 The captured audio is handed to the configured transcription backend
 (``[transcription] backend`` in config.ini):
-  * ``server`` -> POST to the ASR HTTP server (Docker container / Parakeet),
+  * ``server`` -> POST to the ASR HTTP server (local process / Parakeet),
                   with automatic fall back to local faster-whisper
   * ``local``  -> in-process faster-whisper
 
